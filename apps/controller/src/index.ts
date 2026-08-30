@@ -1,5 +1,6 @@
 import { loadConfig } from './config.js';
 import { initPool, closePool } from './db/pool.js';
+import { initDatabaseSchema } from './db/schema.js';
 import { buildApp } from './app.js';
 import { logger } from './utils/logger.js';
 import { initConnectionRegistry } from './ws/connections.js';
@@ -10,6 +11,7 @@ async function main() {
 
   // Initialize database
   await initPool(config.database.connectionString);
+  await initDatabaseSchema();
 
   // Build app
   const app = await buildApp(config);
