@@ -15,9 +15,14 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
-const getBaseUrl = () => {
-  const envUrl = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_CONTROLLER_URL : '';
-  return envUrl ? envUrl.replace(/\/$/, '') : '';
+const getBaseUrl = (): string => {
+  try {
+    const meta = import.meta as unknown as { env?: Record<string, string> };
+    const envUrl = meta?.env?.VITE_CONTROLLER_URL;
+    return envUrl ? envUrl.replace(/\/$/, '') : '';
+  } catch {
+    return '';
+  }
 };
 
 async function refreshToken(): Promise<boolean> {
