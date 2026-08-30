@@ -1767,6 +1767,20 @@ async function buildApp(config) {
     logger: false
     // We use our own pino logger
   });
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (req, body, done) => {
+    if (!body || body === "") {
+      return done(null, {});
+    }
+    if (typeof body === "object") {
+      return done(null, body);
+    }
+    try {
+      const json = JSON.parse(body);
+      done(null, json);
+    } catch (err) {
+      done(null, {});
+    }
+  });
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) {
       return reply.status(error.statusCode).send({
@@ -1793,7 +1807,7 @@ async function buildApp(config) {
       success: false,
       error: {
         code: "INTERNAL_ERROR",
-        message: "An internal server error occurred"
+        message: error.message || "An internal server error occurred"
       }
     });
   });

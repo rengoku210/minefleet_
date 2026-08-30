@@ -22,6 +22,22 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     logger: false, // We use our own pino logger
   });
 
+  // Safe JSON content type parser for serverless payloads
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+    if (!body || body === '') {
+      return done(null, {});
+    }
+    if (typeof body === 'object') {
+      return done(null, body);
+    }
+    try {
+      const json = JSON.parse(body);
+      done(null, json);
+    } catch (err: any) {
+      done(null, {});
+    }
+  });
+
   // Global error handler
   app.setErrorHandler((error: Error & { validation?: unknown; statusCode?: number }, request, reply) => {
     if (error instanceof AppError) {
@@ -52,7 +68,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
-        message: 'An internal server error occurred',
+        message: error.message || 'An internal server error occurred',
       },
     });
   });
