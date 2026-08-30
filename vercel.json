@@ -5,19 +5,15 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api"
-    },
-    {
       "source": "/install.ps1",
-      "destination": "/api"
+      "destination": "/api/install.ps1"
     },
     {
       "source": "/install.sh",
-      "destination": "/api"
+      "destination": "/api/install.sh"
     },
     {
-      "source": "/(.*)",
+      "source": "/((?!api/|install\\.ps1|install\\.sh).*)",
       "destination": "/index.html"
     }
   ]
