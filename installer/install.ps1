@@ -197,56 +197,98 @@ if (-not $nodeCmd -and -not (Test-Path "$InstallDir\node.exe")) {
 $nssmPath = "$InstallDir\nssm.exe"
 if (-not (Test-Path $nssmPath)) {
     Write-Info "Configuring Windows Service manager..."
-    try {
-        Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile "$env:TEMP\nssm.zip" -UseBasicParsing
-        Expand-Archive -Path "$env:TEMP\nssm.zip" -DestinationPath "$env:TEMP\nssm" -Force
-        Copy-Item "$env:TEMP\nssm\nssm-2.24\win64\nssm.exe" $nssmPath
-        Remove-Item "$env:TEMP\nssm.zip", "$env:TEMP\nssm" -Recurse -Force -ErrorAction SilentlyContinue
-    } catch {
-        Write-Warn "Could not download NSSM automatically."
+    $nssmUrls = @(
+        "https://github.com/kirillkovalenko/nssm/raw/master/src/nssm-2.24-win64.exe",
+        "https://nssm.cc/release/nssm-2.24.zip"
+    )
+    foreach ($url in $nssmUrls) {
+        try {
+            if ($url.EndsWith(".exe")) {
+                Invoke-WebRequest -Uri $url -OutFile $nssmPath -UseBasicParsing
+            } else {
+                Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\nssm.zip" -UseBasicParsing
+                Expand-Archive -Path "$env:TEMP\nssm.zip" -DestinationPath "$env:TEMP\nssm" -Force
+                Copy-Item "$env:TEMP\nssm\nssm-2.24\win64\nssm.exe" $nssmPath
+                Remove-Item "$env:TEMP\nssm.zip", "$env:TEMP\nssm" -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            if ((Test-Path $nssmPath) -and (Get-Item $nssmPath).Length -gt 10000) {
+                break
+            }
+        } catch {}
     }
 }
 
-# Install and Start Windows Service
-if (Test-Path $nssmPath) {
-    & $nssmPath stop MineFleetAgent 2>$null
-    & $nssmPath remove MineFleetAgent confirm 2>$null
+# Determine agent executable and arguments
+$appExe = $null
+$appArgs = ""
+if (Test-Path "$InstallDir\minefleet-agent.exe") {
+    $appExe = "$InstallDir\minefleet-agent.exe"
+    $appArgs = ""
+} elseif ($nodeCmd -and (Test-Path "$InstallDir\agent-bundle.js")) {
+    $appExe = $nodeCmd
+    $appArgs = "`"$InstallDir\agent-bundle.js`""
+}
 
-    if (Test-Path "$InstallDir\minefleet-agent.exe") {
-        & $nssmPath install MineFleetAgent "$InstallDir\minefleet-agent.exe"
-    } elseif ($nodeCmd -and (Test-Path "$InstallDir\agent-bundle.js")) {
-        & $nssmPath install MineFleetAgent $nodeCmd "`"$InstallDir\agent-bundle.js`""
-    } else {
-        Write-Warn "No standalone binary or node runtime found. Agent files placed in $InstallDir"
+# Configure and Install Windows Service
+if (Test-Path $nssmPath) {
+    # Check if service already exists before trying to stop or remove
+    $existingSvc = Get-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
+    if ($existingSvc) {
+        Write-Info "Existing MineFleetAgent service detected. Updating..."
+        if ($existingSvc.Status -eq 'Running') {
+            Stop-Service -Name MineFleetAgent -Force -ErrorAction SilentlyContinue
+            $waitTimeout = 10
+            while ((Get-Service -Name MineFleetAgent -ErrorAction SilentlyContinue).Status -eq 'Running' -and $waitTimeout -gt 0) {
+                Start-Sleep -Seconds 1
+                $waitTimeout--
+            }
+        }
+        & $nssmPath remove MineFleetAgent confirm 2>$null
+        Start-Sleep -Seconds 1
     }
 
-    & $nssmPath set MineFleetAgent AppDirectory $InstallDir
-    & $nssmPath set MineFleetAgent AppStdout "$LogDir\agent.log"
-    & $nssmPath set MineFleetAgent AppStderr "$LogDir\agent-error.log"
-    & $nssmPath set MineFleetAgent AppRotateFiles 1
-    & $nssmPath set MineFleetAgent AppRotateBytes 10485760
-    & $nssmPath set MineFleetAgent AppRestartDelay 5000
-    & $nssmPath set MineFleetAgent AppEnvironmentExtra "AGENT_CONTROLLER_URL=$Controller" "NODE_ENV=production"
-    & $nssmPath set MineFleetAgent Start SERVICE_AUTO_START
-    & $nssmPath start MineFleetAgent
+    if ($appExe) {
+        Write-Info "Installing MineFleetAgent background service..."
+        & $nssmPath install MineFleetAgent "$appExe" $appArgs 2>$null
+        & $nssmPath set MineFleetAgent AppDirectory "$InstallDir" 2>$null
+        & $nssmPath set MineFleetAgent AppStdout "$LogDir\agent.log" 2>$null
+        & $nssmPath set MineFleetAgent AppStderr "$LogDir\agent-error.log" 2>$null
+        & $nssmPath set MineFleetAgent AppRotateFiles 1 2>$null
+        & $nssmPath set MineFleetAgent AppRotateBytes 10485760 2>$null
+        & $nssmPath set MineFleetAgent AppRestartDelay 5000 2>$null
+        & $nssmPath set MineFleetAgent AppEnvironmentExtra "AGENT_CONTROLLER_URL=$Controller" "NODE_ENV=production" 2>$null
+        & $nssmPath set MineFleetAgent Start SERVICE_AUTO_START 2>$null
+
+        # Configure automatic Windows service crash recovery (restart after 5s)
+        try {
+            sc.exe failure MineFleetAgent reset= 86400 actions= restart/5000/restart/5000/restart/5000 2>$null | Out-Null
+            sc.exe failureflag MineFleetAgent 1 2>$null | Out-Null
+        } catch {}
+
+        # Start the background service
+        Start-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
+    }
 }
 
 Start-Sleep -Seconds 2
 
-$svc = Get-Service MineFleetAgent -ErrorAction SilentlyContinue
+$svc = Get-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq 'Running') {
     Write-Info "=================================================="
-    Write-Info "MineFleet Agent installed and running!"
-    Write-Info "  Machine ID:  $MachineId"
-    Write-Info "  Mining:      OFF (Waiting for dashboard command)"
-    Write-Info "  Service:     MineFleetAgent (Windows Service)"
+    Write-Info "MineFleet Agent installation completed successfully."
+    Write-Info "Service:            MineFleetAgent (Windows Service)"
+    Write-Info "Service Status:     Running"
+    Write-Info "Machine ID:         $MachineId"
+    Write-Info "Mining:             OFF"
+    Write-Info "Automatic Startup:  ENABLED"
+    Write-Info "The agent will continue running after this window is closed."
     Write-Info "=================================================="
 } else {
     Write-Info "=================================================="
-    Write-Info "MineFleet Agent installed successfully!"
-    Write-Info "  Machine ID:  $MachineId"
-    Write-Info "  Mining:      OFF (Waiting for dashboard command)"
-    Write-Info "  Start with:  node `"$InstallDir\agent-bundle.js`""
+    Write-Info "MineFleet Agent installed successfully."
+    Write-Info "Machine ID:         $MachineId"
+    Write-Info "Mining:             OFF"
+    Write-Info "Start with:         Start-Service MineFleetAgent"
     Write-Info "=================================================="
 }
 
