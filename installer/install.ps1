@@ -269,43 +269,83 @@ if (Test-Path "$InstallDir\minefleet-agent.exe") {
 
 # Configure and Install Windows Service
 if (Test-Path $nssmPath) {
-    # Check if service already exists before trying to stop or remove
+    if (-not $appExe -or -not (Test-Path $appExe)) {
+        Write-Err "Agent executable or Node.js runtime not found at '$appExe'."
+    }
+
     $existingSvc = Get-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
     if ($existingSvc) {
-        Write-Info "Existing MineFleetAgent service detected. Updating..."
-        if ($existingSvc.Status -eq 'Running') {
-            Stop-Service -Name MineFleetAgent -Force -ErrorAction SilentlyContinue
-            $waitTimeout = 10
-            while ((Get-Service -Name MineFleetAgent -ErrorAction SilentlyContinue).Status -eq 'Running' -and $waitTimeout -gt 0) {
+        Write-Info "Existing MineFleetAgent service detected. Updating configuration in-place..."
+        Stop-Service -Name MineFleetAgent -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+
+        # Update service parameters in-place (no delete/recreate needed)
+        & $nssmPath set MineFleetAgent Application "$appExe" 2>&1 | Out-Null
+        if ($appArgs) {
+            & $nssmPath set MineFleetAgent AppParameters $appArgs 2>&1 | Out-Null
+        } else {
+            & $nssmPath reset MineFleetAgent AppParameters 2>&1 | Out-Null
+        }
+        & $nssmPath set MineFleetAgent AppDirectory "$InstallDir" 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppStdout "$LogDir\agent.log" 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppStderr "$LogDir\agent-error.log" 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppRotateFiles 1 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppRotateBytes 10485760 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppRestartDelay 5000 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppEnvironmentExtra "AGENT_CONTROLLER_URL=$Controller" "NODE_ENV=production" 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent Start SERVICE_AUTO_START 2>&1 | Out-Null
+    } else {
+        Write-Info "Installing MineFleetAgent background service..."
+        
+        # Install with retry loop in case SCM has a pending deletion from earlier
+        $serviceCreated = $false
+        $installErr = ""
+        for ($i = 1; $i -le 10; $i++) {
+            $svcCheck = Get-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
+            if ($svcCheck) {
+                $serviceCreated = $true
+                break
+            }
+            
+            $res = & $nssmPath install MineFleetAgent "$appExe" 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0) {
+                $serviceCreated = $true
+                break
+            } else {
+                $installErr = $res.Trim()
                 Start-Sleep -Seconds 1
-                $waitTimeout--
             }
         }
-        & $nssmPath remove MineFleetAgent confirm 2>$null
-        Start-Sleep -Seconds 1
+
+        if (-not $serviceCreated) {
+            # Try native sc.exe creation as direct fallback
+            Write-Warn "NSSM service creation: $installErr. Trying native Windows Service manager..."
+            $binPath = if ($appArgs) { "`"$appExe`" $appArgs" } else { "`"$appExe`"" }
+            sc.exe create MineFleetAgent binPath= "$binPath" start= auto DisplayName= "MineFleetAgent" 2>&1 | Out-Null
+        }
+
+        if ($appArgs) {
+            & $nssmPath set MineFleetAgent AppParameters $appArgs 2>&1 | Out-Null
+        }
+        & $nssmPath set MineFleetAgent AppDirectory "$InstallDir" 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppStdout "$LogDir\agent.log" 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppStderr "$LogDir\agent-error.log" 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppRotateFiles 1 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppRotateBytes 10485760 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppRestartDelay 5000 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent AppEnvironmentExtra "AGENT_CONTROLLER_URL=$Controller" "NODE_ENV=production" 2>&1 | Out-Null
+        & $nssmPath set MineFleetAgent Start SERVICE_AUTO_START 2>&1 | Out-Null
     }
 
-    if ($appExe) {
-        Write-Info "Installing MineFleetAgent background service..."
-        & $nssmPath install MineFleetAgent "$appExe" $appArgs 2>$null
-        & $nssmPath set MineFleetAgent AppDirectory "$InstallDir" 2>$null
-        & $nssmPath set MineFleetAgent AppStdout "$LogDir\agent.log" 2>$null
-        & $nssmPath set MineFleetAgent AppStderr "$LogDir\agent-error.log" 2>$null
-        & $nssmPath set MineFleetAgent AppRotateFiles 1 2>$null
-        & $nssmPath set MineFleetAgent AppRotateBytes 10485760 2>$null
-        & $nssmPath set MineFleetAgent AppRestartDelay 5000 2>$null
-        & $nssmPath set MineFleetAgent AppEnvironmentExtra "AGENT_CONTROLLER_URL=$Controller" "NODE_ENV=production" 2>$null
-        & $nssmPath set MineFleetAgent Start SERVICE_AUTO_START 2>$null
+    # Configure automatic Windows service crash recovery (restart after 5s)
+    try {
+        sc.exe failure MineFleetAgent reset= 86400 actions= restart/5000/restart/5000/restart/5000 2>$null | Out-Null
+        sc.exe failureflag MineFleetAgent 1 2>$null | Out-Null
+    } catch {}
 
-        # Configure automatic Windows service crash recovery (restart after 5s)
-        try {
-            sc.exe failure MineFleetAgent reset= 86400 actions= restart/5000/restart/5000/restart/5000 2>$null | Out-Null
-            sc.exe failureflag MineFleetAgent 1 2>$null | Out-Null
-        } catch {}
-
-        # Start the background service
-        Start-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
-    }
+    # Start the background service
+    Write-Info "Starting MineFleetAgent service..."
+    Start-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
 }
 
 Start-Sleep -Seconds 2
