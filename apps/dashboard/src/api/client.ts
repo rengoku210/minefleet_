@@ -30,9 +30,14 @@ async function refreshToken(): Promise<boolean> {
     const url = `${getBaseUrl()}/api/auth/refresh`;
     const res = await fetch(url, { method: 'POST', credentials: 'include' });
     if (!res.ok) return false;
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return false;
     const data = await res.json();
-    setAccessToken(data.data.accessToken);
-    return true;
+    if (data?.data?.accessToken) {
+      setAccessToken(data.data.accessToken);
+      return true;
+    }
+    return false;
   } catch {
     return false;
   }
@@ -46,7 +51,7 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   const token = getAccessToken();
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const fullUrl = path.startsWith('http') ? path : `${getBaseUrl()}${path}`;
+  const fullUrl = path.startsWith('http') ? path : `${getBaseUrl()}${path.startsWith('/') ? path : '/' + path}`;
   let res = await fetch(fullUrl, { ...options, headers, credentials: 'include' });
 
   if (res.status === 401 && token) {
@@ -57,7 +62,17 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
     }
   }
 
-  const data = await res.json();
-  if (!data.success) throw new Error(data.error?.message || 'API error');
-  return data.data;
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error?.message || 'API error');
+    return data.data;
+  }
+
+  // Fallback for non-JSON responses
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(res.status === 404 ? 'API route not found (404)' : `Server error (${res.status}): ${text.slice(0, 100)}`);
+  }
+  return text as unknown as T;
 }

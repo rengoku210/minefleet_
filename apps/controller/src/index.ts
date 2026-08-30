@@ -28,11 +28,37 @@ export async function getApp(): Promise<FastifyInstance> {
   return initPromise;
 }
 
-// Serverless Function Handler (Vercel / AWS Lambda / Edge adapter)
+// Serverless Function Handler (Vercel / Lambda / Edge)
 export default async function handler(req: any, res: any) {
   try {
     const app = await getApp();
-    app.server.emit('request', req, res);
+
+    const method = req.method || 'GET';
+    const url = req.url || '/';
+    const headers = req.headers || {};
+
+    let payload: any = undefined;
+    if (req.body !== undefined && req.body !== null) {
+      payload = typeof req.body === 'object' ? JSON.stringify(req.body) : req.body;
+      if (typeof req.body === 'object' && !headers['content-type']) {
+        headers['content-type'] = 'application/json';
+      }
+    }
+
+    const response = await app.inject({
+      method,
+      url,
+      headers,
+      payload,
+    });
+
+    res.statusCode = response.statusCode;
+    for (const [key, value] of Object.entries(response.headers)) {
+      if (value !== undefined) {
+        res.setHeader(key, value);
+      }
+    }
+    res.end(response.rawPayload);
   } catch (err: any) {
     logger.error({ err: err?.message || err }, 'Serverless handler error');
     if (!res.headersSent) {
@@ -52,7 +78,6 @@ async function main() {
     return;
   }
 
-  // Only start TCP listener if directly executed
   const config = loadConfig();
   logger.info({ env: config.nodeEnv }, 'Starting MineFleet Controller standalone server');
 
@@ -76,7 +101,6 @@ async function main() {
   }
 }
 
-// Only run main if file is run directly (not imported as serverless function)
 if (process.argv[1] && (process.argv[1].endsWith('dist/index.js') || process.argv[1].endsWith('src/index.ts'))) {
   main();
 }

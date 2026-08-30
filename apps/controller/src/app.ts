@@ -57,6 +57,17 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     });
   });
 
+  // Custom JSON 404 handler (ensures API 404 is NEVER HTML)
+  app.setNotFoundHandler((request, reply) => {
+    return reply.status(404).send({
+      success: false,
+      error: {
+        code: 'NOT_FOUND',
+        message: `Route ${request.method} ${request.url} not found`,
+      },
+    });
+  });
+
   // Plugins
   await app.register(cors, {
     origin: true,
@@ -79,32 +90,36 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   // Decorate with config
   app.decorate('config', config);
 
-  // Health check
-  app.get('/health', async () => {
-    return { status: 'ok', timestamp: new Date().toISOString() };
-  });
-
   // Root welcome
   app.get('/', async () => {
     return { status: 'ok', name: 'MineFleet Controller API', version: '0.2.0' };
   });
 
-  // Installer and agent bundle routes (/install.ps1, /install.sh, /api/agent/bundle)
-  await app.register(installerRoutes);
+  // Helper to register all standard domain routes
+  const registerDomainRoutes = async (instance: FastifyInstance) => {
+    instance.get('/health', async () => {
+      return { status: 'ok', timestamp: new Date().toISOString() };
+    });
+    await instance.register(authRoutes, { prefix: '/auth' });
+    await instance.register(userRoutes, { prefix: '/users' });
+    await instance.register(enrollmentRoutes, { prefix: '/enrollment-tokens' });
+    await instance.register(machineRoutes, { prefix: '/machines' });
+    await instance.register(machineRoutes, { prefix: '/agent' }); // Alias /api/agent/heartbeat -> /api/machines/heartbeat
+    await instance.register(groupRoutes, { prefix: '/groups' });
+    await instance.register(scheduleRoutes, { prefix: '/schedules' });
+    await instance.register(statsRoutes, { prefix: '/stats' });
+    await instance.register(logRoutes, { prefix: '/logs' });
+    await instance.register(settingsRoutes, { prefix: '/settings' });
+  };
 
-  // API routes
-  await app.register(async (api) => {
-    await api.register(authRoutes, { prefix: '/auth' });
-    await api.register(userRoutes, { prefix: '/users' });
-    await api.register(enrollmentRoutes, { prefix: '/enrollment-tokens' });
-    await api.register(machineRoutes, { prefix: '/machines' });
-    await api.register(machineRoutes, { prefix: '/agent' }); // Alias /api/agent/heartbeat -> /api/machines/heartbeat
-    await api.register(groupRoutes, { prefix: '/groups' });
-    await api.register(scheduleRoutes, { prefix: '/schedules' });
-    await api.register(statsRoutes, { prefix: '/stats' });
-    await api.register(logRoutes, { prefix: '/logs' });
-    await api.register(settingsRoutes, { prefix: '/settings' });
-  }, { prefix: '/api' });
+  // 1. Register with /api prefix (primary API routes)
+  await app.register(registerDomainRoutes, { prefix: '/api' });
+
+  // 2. Also register at root as alias (handles cases where serverless proxies strip /api)
+  await app.register(registerDomainRoutes);
+
+  // 3. Installer and agent bundle routes (/install.ps1, /install.sh, /api/install.ps1, /api/install.sh, /api/agent/bundle)
+  await app.register(installerRoutes);
 
   return app;
 }
