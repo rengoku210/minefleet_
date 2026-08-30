@@ -39,13 +39,14 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   });
 
   // Global error handler
-  app.setErrorHandler((error: Error & { validation?: unknown; statusCode?: number }, request, reply) => {
-    if (error instanceof AppError) {
-      return reply.status(error.statusCode).send({
+  app.setErrorHandler((error: any, request, reply) => {
+    const statusCode = error.statusCode || (error instanceof AppError ? error.statusCode : undefined);
+    if (statusCode && statusCode >= 400 && statusCode < 500) {
+      return reply.status(statusCode).send({
         success: false,
         error: {
-          code: error.code,
-          message: error.message,
+          code: error.code || 'CLIENT_ERROR',
+          message: error.message || 'Client error',
           details: error.details,
         },
       });
@@ -63,7 +64,7 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
       });
     }
 
-    logger.error({ err: error, url: request.url }, 'Unhandled error');
+    logger.error({ err: error?.message || error, stack: error?.stack, url: request.url }, 'Unhandled error');
     return reply.status(500).send({
       success: false,
       error: {

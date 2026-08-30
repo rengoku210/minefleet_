@@ -1045,10 +1045,11 @@ async function updateMachineConfig(machineId, updates) {
 }
 
 // src/services/enrollment.service.ts
-import { randomUUID as randomUUID4 } from "crypto";
+import { randomUUID as randomUUID4, createHmac as createHmac2, timingSafeEqual } from "crypto";
 var logger8 = createChildLogger("enrollment-service");
 async function createEnrollmentToken(options) {
   const storage = getStorage();
+  const config = loadConfig();
   const {
     createdBy,
     label = null,
@@ -1061,10 +1062,19 @@ async function createEnrollmentToken(options) {
       throw new NotFoundError("Machine group");
     }
   }
-  const rawToken = generateToken("enroll");
-  const tokenHash = hashToken(rawToken);
-  const expiresAt = new Date(Date.now() + expiresInMinutes * 60 * 1e3);
   const tokenId = randomUUID4();
+  const expiresAt = new Date(Date.now() + expiresInMinutes * 60 * 1e3);
+  const payload = {
+    id: tokenId,
+    sub: createdBy,
+    targetGroupId: targetGroupId || void 0,
+    exp: Math.floor(expiresAt.getTime() / 1e3),
+    nonce: generateToken("n")
+  };
+  const payloadEncoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = createHmac2("sha256", config.jwt.secret).update(payloadEncoded).digest("hex");
+  const rawToken = `enroll_${payloadEncoded}.${signature}`;
+  const tokenHash = hashToken(rawToken);
   const tokenRecord = {
     id: tokenId,
     tokenHash,
@@ -1075,7 +1085,11 @@ async function createEnrollmentToken(options) {
     revoked: false,
     createdAt: (/* @__PURE__ */ new Date()).toISOString()
   };
-  await storage.saveEnrollmentToken(tokenRecord, expiresInMinutes * 60);
+  try {
+    await storage.saveEnrollmentToken(tokenRecord, expiresInMinutes * 60);
+  } catch (err) {
+    logger8.warn({ err }, "Failed saving token to storage (stateless HMAC will still verify)");
+  }
   logger8.info({ tokenId, label, expiresInMinutes }, "Enrollment token created");
   return {
     id: tokenId,
@@ -1113,47 +1127,90 @@ async function revokeEnrollmentToken(tokenId) {
 }
 async function enrollMachine(rawToken, machineUid, systemInfo, ipAddress) {
   const storage = getStorage();
+  const config = loadConfig();
+  let targetGroupId = null;
+  let validSignature = false;
+  if (rawToken && rawToken.startsWith("enroll_") && rawToken.includes(".")) {
+    const parts = rawToken.substring(7).split(".");
+    if (parts.length === 2) {
+      const [payloadEncoded, signature] = parts;
+      try {
+        const expectedSig = createHmac2("sha256", config.jwt.secret).update(payloadEncoded).digest("hex");
+        if (signature.length === expectedSig.length && timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
+          const payload = JSON.parse(Buffer.from(payloadEncoded, "base64url").toString("utf-8"));
+          if (payload.exp && payload.exp * 1e3 < Date.now()) {
+            throw new UnauthorizedError("Enrollment token has expired");
+          }
+          targetGroupId = payload.targetGroupId || null;
+          validSignature = true;
+        }
+      } catch (err) {
+        if (err instanceof UnauthorizedError) throw err;
+        logger8.warn({ err: err?.message }, "Failed parsing signed token payload");
+      }
+    }
+  }
   const tokenHash = hashToken(rawToken);
-  const token = await storage.getEnrollmentTokenByHash(tokenHash);
-  if (!token) {
+  const tokenFromStorage = await storage.getEnrollmentTokenByHash(tokenHash);
+  if (tokenFromStorage) {
+    if (tokenFromStorage.revoked) {
+      throw new UnauthorizedError("Enrollment token has been revoked");
+    }
+    if (tokenFromStorage.usedAt) {
+      throw new UnauthorizedError("Enrollment token has already been used");
+    }
+    if (new Date(tokenFromStorage.expiresAt).getTime() < Date.now()) {
+      throw new UnauthorizedError("Enrollment token has expired");
+    }
+    targetGroupId = tokenFromStorage.targetGroupId || targetGroupId;
+  } else if (!validSignature) {
     throw new UnauthorizedError("Invalid enrollment token");
   }
-  if (token.revoked) {
-    throw new UnauthorizedError("Enrollment token has been revoked");
-  }
-  if (token.usedAt) {
-    throw new UnauthorizedError("Enrollment token has already been used");
-  }
-  if (new Date(token.expiresAt).getTime() < Date.now()) {
-    throw new UnauthorizedError("Enrollment token has expired");
-  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  let machineId;
   const existing = await storage.getMachineByUid(machineUid);
   if (existing) {
-    throw new ValidationError("Machine with this UID is already enrolled");
+    machineId = existing.id;
+    existing.name = systemInfo.hostname || existing.name;
+    existing.hostname = systemInfo.hostname || existing.hostname;
+    existing.os = systemInfo.os || existing.os;
+    existing.osVersion = systemInfo.osVersion || existing.osVersion;
+    existing.cpuModel = systemInfo.cpuModel || existing.cpuModel;
+    existing.cpuCores = systemInfo.cpuCores || existing.cpuCores;
+    existing.cpuThreads = systemInfo.cpuThreads || existing.cpuThreads;
+    existing.ramBytes = systemInfo.ramBytes || existing.ramBytes;
+    existing.gpus = systemInfo.gpus || existing.gpus;
+    existing.agentVersion = systemInfo.agentVersion || existing.agentVersion;
+    existing.ipAddress = ipAddress;
+    existing.status = "online";
+    existing.lastHeartbeat = now;
+    existing.updatedAt = now;
+    await storage.saveMachine(existing);
+    logger8.info({ machineId, machineUid }, "Existing machine record refreshed upon re-enrollment");
+  } else {
+    machineId = randomUUID4();
+    const machineRecord = {
+      id: machineId,
+      machineUid,
+      name: systemInfo.hostname || "PC",
+      hostname: systemInfo.hostname || "localhost",
+      os: systemInfo.os || "unknown",
+      osVersion: systemInfo.osVersion || "",
+      cpuModel: systemInfo.cpuModel || "Unknown CPU",
+      cpuCores: systemInfo.cpuCores || 1,
+      cpuThreads: systemInfo.cpuThreads || 1,
+      ramBytes: systemInfo.ramBytes || 0,
+      gpus: systemInfo.gpus || [],
+      agentVersion: systemInfo.agentVersion || "0.2.0",
+      ipAddress,
+      groupId: targetGroupId,
+      status: "online",
+      lastHeartbeat: now,
+      registeredAt: now,
+      updatedAt: now
+    };
+    await storage.saveMachine(machineRecord);
   }
-  const machineId = randomUUID4();
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const machineRecord = {
-    id: machineId,
-    machineUid,
-    name: systemInfo.hostname || "PC",
-    hostname: systemInfo.hostname || "localhost",
-    os: systemInfo.os || "unknown",
-    osVersion: systemInfo.osVersion,
-    cpuModel: systemInfo.cpuModel || "Unknown CPU",
-    cpuCores: systemInfo.cpuCores || 1,
-    cpuThreads: systemInfo.cpuThreads || 1,
-    ramBytes: systemInfo.ramBytes || 0,
-    gpus: systemInfo.gpus || [],
-    agentVersion: systemInfo.agentVersion || "0.1.0",
-    ipAddress,
-    groupId: token.targetGroupId || null,
-    status: "online",
-    lastHeartbeat: now,
-    registeredAt: now,
-    updatedAt: now
-  };
-  await storage.saveMachine(machineRecord);
   const machineApiToken = generateToken("agent");
   const machineTokenHash = hashToken(machineApiToken);
   const credentialRecord = {
@@ -1163,26 +1220,31 @@ async function enrollMachine(rawToken, machineUid, systemInfo, ipAddress) {
     revoked: false
   };
   await storage.saveMachineCredential(credentialRecord);
-  const configRecord = {
-    ...DEFAULT_MACHINE_CONFIG,
-    id: randomUUID4(),
-    machineId,
-    version: 1,
-    miningEnabled: false,
-    // Strictly OFF
-    updatedAt: now
-  };
-  if (token.targetGroupId) {
-    const group = await storage.getGroup(token.targetGroupId);
-    if (group?.defaultConfig) {
-      Object.assign(configRecord, group.defaultConfig);
-      configRecord.miningEnabled = false;
+  let configRecord = await storage.getMachineConfig(machineId);
+  if (!configRecord) {
+    configRecord = {
+      ...DEFAULT_MACHINE_CONFIG,
+      id: randomUUID4(),
+      machineId,
+      version: 1,
+      miningEnabled: false,
+      // Strictly OFF
+      updatedAt: now
+    };
+    if (targetGroupId) {
+      const group = await storage.getGroup(targetGroupId);
+      if (group?.defaultConfig) {
+        Object.assign(configRecord, group.defaultConfig);
+        configRecord.miningEnabled = false;
+      }
     }
+    await storage.saveMachineConfig(machineId, configRecord);
   }
-  await storage.saveMachineConfig(machineId, configRecord);
-  token.usedAt = now;
-  token.usedByMachine = machineId;
-  await storage.saveEnrollmentToken(token);
+  if (tokenFromStorage) {
+    tokenFromStorage.usedAt = now;
+    tokenFromStorage.usedByMachine = machineId;
+    await storage.saveEnrollmentToken(tokenFromStorage);
+  }
   logger8.info({ machineId, machineUid, hostname: systemInfo.hostname }, "Machine enrolled successfully");
   return { machineId, machineApiToken, config: configRecord };
 }
@@ -2251,12 +2313,13 @@ async function buildApp(config) {
     }
   });
   app.setErrorHandler((error, request, reply) => {
-    if (error instanceof AppError) {
-      return reply.status(error.statusCode).send({
+    const statusCode = error.statusCode || (error instanceof AppError ? error.statusCode : void 0);
+    if (statusCode && statusCode >= 400 && statusCode < 500) {
+      return reply.status(statusCode).send({
         success: false,
         error: {
-          code: error.code,
-          message: error.message,
+          code: error.code || "CLIENT_ERROR",
+          message: error.message || "Client error",
           details: error.details
         }
       });
@@ -2271,7 +2334,7 @@ async function buildApp(config) {
         }
       });
     }
-    logger.error({ err: error, url: request.url }, "Unhandled error");
+    logger.error({ err: error?.message || error, stack: error?.stack, url: request.url }, "Unhandled error");
     return reply.status(500).send({
       success: false,
       error: {
