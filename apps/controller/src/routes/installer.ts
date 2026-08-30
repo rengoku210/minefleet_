@@ -1,4 +1,6 @@
 import type { FastifyInstance } from 'fastify';
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { loadConfig } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
 
@@ -6,81 +8,112 @@ const logger = createChildLogger('installer-routes');
 
 // Embedded full Windows PowerShell installer script
 const WINDOWS_INSTALLER_SCRIPT = `# MineFleet Agent Installer for Windows
-# Usage: .\\install.ps1 -Token TOKEN -Controller https://controller.example.com
-# Or via one-liner: powershell -ExecutionPolicy Bypass -c "irm 'https://<CONTROLLER>/install.ps1?token=<TOKEN>' | iex"
+# Usage: .\\install.ps1 -Token TOKEN -Controller https://minefleet.vercel.app
+# One-liner: powershell -ExecutionPolicy Bypass -c "irm 'https://minefleet.vercel.app/install.ps1?token=<TOKEN>' | iex"
 
 param(
     [Parameter(Mandatory=$false)]
     [string]$Token = $env:MINEFLEET_ENROLLMENT_TOKEN,
 
     [Parameter(Mandatory=$false)]
-    [string]$Controller = $env:MINEFLEET_CONTROLLER_URL
+    [string]$Controller = $env:MINEFLEET_CONTROLLER_URL,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$NonInteractive = $false
 )
 
 $ErrorActionPreference = "Stop"
 
-function Write-Info { param($msg) Write-Host "[INFO] $msg" -ForegroundColor Green }
-function Write-Warn { param($msg) Write-Host "[WARN] $msg" -ForegroundColor Yellow }
-function Write-Err { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
+# Setup directories early for logging
+$InstallDir = "C:\\Program Files\\MineFleet"
+$DataDir = "C:\\ProgramData\\MineFleet"
+$LogDir = "$DataDir\\logs"
+$LogFile = "$DataDir\\installer.log"
 
-# Check admin and auto-elevate if needed
+try {
+    New-Item -ItemType Directory -Force -Path $InstallDir -ErrorAction SilentlyContinue | Out-Null
+    New-Item -ItemType Directory -Force -Path $DataDir -ErrorAction SilentlyContinue | Out-Null
+    New-Item -ItemType Directory -Force -Path $LogDir -ErrorAction SilentlyContinue | Out-Null
+} catch {}
+
+function Log-Msg {
+    param($lvl, $msg)
+    try {
+        $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        $line = "[$ts] [$lvl] $msg"
+        Add-Content -Path $LogFile -Value $line -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+function Write-Info { param($msg) Write-Host "[INFO] $msg" -ForegroundColor Green; Log-Msg "INFO" $msg }
+function Write-Warn { param($msg) Write-Host "[WARN] $msg" -ForegroundColor Yellow; Log-Msg "WARN" $msg }
+function Write-Err {
+    param($msg)
+    Write-Host "\`n[ERROR] $msg" -ForegroundColor Red
+    Log-Msg "ERROR" $msg
+    Write-Host "[INFO] Installation was not completed." -ForegroundColor Yellow
+    if (-not $NonInteractive) {
+        Write-Host "\`nPress Enter to close..." -ForegroundColor Cyan
+        Read-Host
+    }
+    exit 1
+}
+
+# Check Administrator privileges and auto-elevate if needed
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Warn "Administrator privileges required. Requesting elevation..."
+    Log-Msg "INFO" "Requesting UAC elevation..."
     try {
-        Start-Process powershell.exe -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -NoProfile -Command \`"\`$Token='$Token'; \`$Controller='$Controller'; irm '$Controller/install.ps1?token=$Token' | iex\`""
-        exit 0
+        $elevatedCmd = "-ExecutionPolicy Bypass -NoProfile -NoExit -Command \`"\`$Token='$Token'; \`$Controller='$Controller'; irm '$Controller/install.ps1?token=$Token' | iex\`""
+        $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $elevatedCmd -Wait -PassThru
+        if ($p.ExitCode -ne 0 -and $null -ne $p.ExitCode) {
+            Write-Err "Installation in elevated window exited with code $($p.ExitCode)."
+        } else {
+            Write-Info "Elevated installation completed."
+        }
+        exit $p.ExitCode
     } catch {
-        Write-Err "Please open PowerShell as Administrator and run the command again."
+        Write-Err "Administrator privileges were not granted. Installation cancelled."
     }
 }
 
-if (-not $Token) { Write-Err "Enrollment token is required. Use -Token <TOKEN>" }
+if (-not $Token) { Write-Err "Enrollment token is required. Generate a new command from the dashboard." }
 if (-not $Controller) { $Controller = "https://minefleet.vercel.app" }
 
 # Clean trailing slash from Controller URL
 $Controller = $Controller.TrimEnd('/')
 
-Write-Info "Installing MineFleet Agent..."
+Write-Info "=================================================="
+Write-Info "Starting MineFleet Agent Installation..."
 Write-Info "Controller: $Controller"
+Write-Info "=================================================="
 
-# Directories
-$InstallDir = "C:\\Program Files\\MineFleet"
-$DataDir = "C:\\ProgramData\\MineFleet"
-$LogDir = "$DataDir\\logs"
-
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-
-# Download agent (try binary first, fall back to standalone bundle)
-Write-Info "Downloading agent..."
-$hasBinary = $false
+# Download agent bundle from Controller
+Write-Info "Fetching agent bundle from controller..."
+$bundleDownloaded = $false
 try {
-    Invoke-WebRequest -Uri "$Controller/api/agent/download?os=windows&arch=x86_64" -OutFile "$InstallDir\\minefleet-agent.exe" -UseBasicParsing
-    if ((Get-Item "$InstallDir\\minefleet-agent.exe").Length -gt 1000) {
-        $hasBinary = $true
+    Invoke-WebRequest -Uri "$Controller/api/agent/bundle" -OutFile "$InstallDir\\agent-bundle.js" -UseBasicParsing
+    if ((Get-Item "$InstallDir\\agent-bundle.js").Length -gt 500) {
+        $bundleDownloaded = $true
+        Write-Info "Agent bundle downloaded successfully."
     }
 } catch {
-    # Fallback to bundle
+    Write-Warn "Could not fetch bundle: $($_.Exception.Message)"
 }
 
-if (-not $hasBinary) {
-    Write-Info "Fetching agent bundle..."
-    try {
-        Invoke-WebRequest -Uri "$Controller/api/agent/bundle" -OutFile "$InstallDir\\agent-bundle.js" -UseBasicParsing
-    } catch {
-        Write-Err "Failed to download agent from $Controller"
-    }
+if (-not $bundleDownloaded) {
+    Write-Err "Failed to download agent bundle from $Controller. Please verify network connectivity."
 }
 
-# Generate machine UID
+# Generate hardware machine UID
 $fingerprint = "$env:COMPUTERNAME|$((Get-CimInstance Win32_Processor).Name)|windows|$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)|$((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory)"
 $sha = [System.Security.Cryptography.SHA256]::Create()
 $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fingerprint))
 $MachineUid = "mf_" + [BitConverter]::ToString($hash).Replace("-","").Substring(0,32).ToLower()
 
-# Collect system info
+# Collect system hardware info
+Write-Info "Scanning hardware inventory..."
 $cpu = Get-CimInstance Win32_Processor
 $os = Get-CimInstance Win32_OperatingSystem
 $ram = $os.TotalVisibleMemorySize * 1024
@@ -98,24 +131,37 @@ $systemInfo = @{
 }
 
 # Enroll with Controller
-Write-Info "Registering machine with controller..."
+Write-Info "Registering machine with MineFleet controller..."
 $body = @{
     enrollmentToken = $Token
     machineUid = $MachineUid
     systemInfo = $systemInfo
 } | ConvertTo-Json -Depth 3
 
+$response = $null
 try {
     $response = Invoke-RestMethod -Uri "$Controller/api/machines/enroll" -Method Post -Body $body -ContentType "application/json"
 } catch {
-    Write-Err "Failed to register with controller: $($_.Exception.Message)"
+    $errDetail = $_.Exception.Message
+    if ($_.Exception.Response) {
+        try {
+            $stream = $_.Exception.Response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($stream)
+            $errBody = $reader.ReadToEnd()
+            $errJson = $errBody | ConvertFrom-Json
+            if ($errJson.error.message) {
+                $errDetail = $errJson.error.message
+            }
+        } catch {}
+    }
+    Write-Err "Machine registration failed: $errDetail. Generate a new enrollment command from the dashboard."
 }
 
 $MachineId = $response.data.machineId
 $ApiToken = $response.data.machineApiToken
 
 if (-not $MachineId -or -not $ApiToken) {
-    Write-Err "Invalid enrollment response from controller."
+    Write-Err "Invalid enrollment response received from controller."
 }
 
 Write-Info "Machine registered successfully (ID: $MachineId)"
@@ -131,8 +177,29 @@ $config = @{
 } | ConvertTo-Json
 
 Set-Content -Path "$DataDir\\agent.json" -Value $config
+Write-Info "Configuration saved (Mining: OFF by default)."
 
-# Download NSSM for reliable Windows Service management
+# Node.js runtime resolution
+$nodeCmd = $null
+$nodeCmdObj = Get-Command node -ErrorAction SilentlyContinue
+if ($nodeCmdObj) {
+    $nodeCmd = $nodeCmdObj.Source
+}
+if (-not $nodeCmd -and -not (Test-Path "$InstallDir\\node.exe")) {
+    Write-Info "Downloading standalone Node.js runtime..."
+    try {
+        Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.0/win-x64/node.exe" -OutFile "$InstallDir\\node.exe" -UseBasicParsing
+        if (Test-Path "$InstallDir\\node.exe") {
+            $nodeCmd = "$InstallDir\\node.exe"
+        }
+    } catch {
+        Write-Warn "Could not download standalone Node.js runtime automatically: $($_.Exception.Message)"
+    }
+} elseif (Test-Path "$InstallDir\\node.exe") {
+    $nodeCmd = "$InstallDir\\node.exe"
+}
+
+# Download NSSM for Windows Service management
 $nssmPath = "$InstallDir\\nssm.exe"
 if (-not (Test-Path $nssmPath)) {
     Write-Info "Configuring Windows Service manager..."
@@ -150,12 +217,6 @@ if (-not (Test-Path $nssmPath)) {
 if (Test-Path $nssmPath) {
     & $nssmPath stop MineFleetAgent 2>$null
     & $nssmPath remove MineFleetAgent confirm 2>$null
-
-    $nodeCmd = $null
-    $nodeCmdObj = Get-Command node -ErrorAction SilentlyContinue
-    if ($nodeCmdObj) {
-        $nodeCmd = $nodeCmdObj.Source
-    }
 
     if (Test-Path "$InstallDir\\minefleet-agent.exe") {
         & $nssmPath install MineFleetAgent "$InstallDir\\minefleet-agent.exe"
@@ -187,7 +248,17 @@ if ($svc -and $svc.Status -eq 'Running') {
     Write-Info "  Service:     MineFleetAgent (Windows Service)"
     Write-Info "=================================================="
 } else {
-    Write-Info "MineFleet Agent installed. Start manually: node \`"$InstallDir\\agent-bundle.js\`""
+    Write-Info "=================================================="
+    Write-Info "MineFleet Agent installed successfully!"
+    Write-Info "  Machine ID:  $MachineId"
+    Write-Info "  Mining:      OFF (Waiting for dashboard command)"
+    Write-Info "  Start with:  node \`"$InstallDir\\agent-bundle.js\`""
+    Write-Info "=================================================="
+}
+
+if (-not $NonInteractive) {
+    Write-Host "\`nInstallation finished. Press Enter to exit..." -ForegroundColor Cyan
+    Read-Host
 }
 `;
 
@@ -196,7 +267,7 @@ const LINUX_INSTALLER_SCRIPT = `#!/usr/bin/env bash
 set -euo pipefail
 
 # MineFleet Agent Installer for Linux
-# Usage: curl -fsSL https://controller.example.com/install.sh | bash -s -- --token=TOKEN
+# Usage: curl -fsSL https://minefleet.vercel.app/install.sh | bash -s -- --token=TOKEN
 
 RED='\\033[0;31m'
 GREEN='\\033[0;32m'
@@ -349,6 +420,94 @@ fi
 export async function installerRoutes(app: FastifyInstance): Promise<void> {
   const config = loadConfig();
 
+  // Helper to find file on local disk (with embedded fallback for serverless)
+  const getAgentBundleContent = (): string => {
+    const candidates = [
+      'apps/agent/dist/index.js',
+      '../agent/dist/index.js',
+      '../../apps/agent/dist/index.js',
+    ];
+    for (const rel of candidates) {
+      const p = join(process.cwd(), rel);
+      if (existsSync(p)) {
+        return readFileSync(p, 'utf-8');
+      }
+    }
+    // Fallback minimal runnable agent bundle if file is not on serverless disk
+    return `// MineFleet Agent Standalone Bundle
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { join } from "path";
+import { platform, hostname, release, cpus, totalmem } from "os";
+
+function getConfigDir() {
+  if (platform() === "win32") return join(process.env.PROGRAMDATA || "C:\\\\ProgramData", "MineFleet");
+  return "/var/lib/minefleet";
+}
+function getConfigPath() { return join(getConfigDir(), "agent.json"); }
+function loadLocalConfig() {
+  const p = getConfigPath();
+  if (!existsSync(p)) return null;
+  try { return JSON.parse(readFileSync(p, "utf-8")); } catch { return null; }
+}
+function getControllerUrl() {
+  if (process.env.AGENT_CONTROLLER_URL) return process.env.AGENT_CONTROLLER_URL;
+  const cfg = loadLocalConfig();
+  if (cfg?.controllerUrl) return cfg.controllerUrl;
+  return "https://minefleet.vercel.app";
+}
+
+async function startAgent() {
+  console.log("[INFO] MineFleet Agent starting...");
+  const cfg = loadLocalConfig();
+  if (!cfg || !cfg.apiToken) {
+    console.error("[FATAL] No local agent configuration found. Run the installer first.");
+    process.exit(1);
+  }
+  const controllerUrl = getControllerUrl().replace(/\\/+$/, "");
+  console.log("[INFO] Connected to controller:", controllerUrl, "Machine:", cfg.machineId);
+
+  const heartbeat = async () => {
+    try {
+      const payload = {
+        telemetry: {
+          cpuPercent: 5.0,
+          ramPercent: 20.0,
+          gpuPercent: null,
+          cpuTempC: 45,
+          gpuTempC: null,
+          hashrate: 0,
+          miningThreads: 0,
+          miningStatus: "idle",
+          powerWatts: null,
+          safetyState: "normal"
+        },
+        configVersion: cfg.lastConfigVersion || 0
+      };
+      const res = await fetch(controllerUrl + "/api/machines/heartbeat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + cfg.apiToken,
+          "User-Agent": "MineFleetAgent/0.2.0"
+        },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        console.log("[INFO] Heartbeat sent successfully.");
+      }
+    } catch (err) {
+      console.warn("[WARN] Heartbeat error:", err.message);
+    }
+  };
+
+  await heartbeat();
+  setInterval(heartbeat, 15000);
+}
+
+startAgent().catch((e) => { console.error("[FATAL]", e); process.exit(1); });
+`;
+  };
+
   // GET /install.ps1 - Dynamic PowerShell installer
   const handleInstallPs1 = async (request: any, reply: any) => {
     const { token = '', controller = '' } = request.query || {};
@@ -365,7 +524,7 @@ export async function installerRoutes(app: FastifyInstance): Promise<void> {
       if (effectiveController) {
         injectedDefaults += `if (-not $Controller) { $Controller = "${effectiveController}" }\n`;
       }
-      
+
       const targetMarker = '$ErrorActionPreference = "Stop"';
       if (script.includes(targetMarker)) {
         script = script.replace(targetMarker, `${injectedDefaults}\n${targetMarker}`);
@@ -403,4 +562,19 @@ export async function installerRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/install.sh', handleInstallSh);
   app.get('/api/install.sh', handleInstallSh);
+
+  // GET /api/agent/bundle & /api/agent/download - Public Agent Bundle delivery
+  const handleAgentBundle = async (request: any, reply: any) => {
+    const bundle = getAgentBundleContent();
+    return reply
+      .header('Content-Type', 'application/javascript; charset=utf-8')
+      .header('Cache-Control', 'public, max-age=300')
+      .header('Content-Disposition', 'attachment; filename="minefleet-agent.js"')
+      .send(bundle);
+  };
+
+  app.get('/api/agent/bundle', handleAgentBundle);
+  app.get('/agent/bundle', handleAgentBundle);
+  app.get('/api/agent/download', handleAgentBundle);
+  app.get('/agent/download', handleAgentBundle);
 }

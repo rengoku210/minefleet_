@@ -120,7 +120,6 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     await instance.register(userRoutes, { prefix: '/users' });
     await instance.register(enrollmentRoutes, { prefix: '/enrollment-tokens' });
     await instance.register(machineRoutes, { prefix: '/machines' });
-    await instance.register(machineRoutes, { prefix: '/agent' }); // Alias /api/agent/heartbeat -> /api/machines/heartbeat
     await instance.register(groupRoutes, { prefix: '/groups' });
     await instance.register(scheduleRoutes, { prefix: '/schedules' });
     await instance.register(statsRoutes, { prefix: '/stats' });

@@ -1,79 +1,110 @@
 # MineFleet Agent Installer for Windows
-# Usage: .\install.ps1 -Token TOKEN -Controller https://controller.example.com
-# Or via one-liner: powershell -ExecutionPolicy Bypass -c "irm 'https://<CONTROLLER>/install.ps1?token=<TOKEN>' | iex"
+# Usage: .\install.ps1 -Token TOKEN -Controller https://minefleet.vercel.app
+# One-liner: powershell -ExecutionPolicy Bypass -c "irm 'https://minefleet.vercel.app/install.ps1?token=<TOKEN>' | iex"
 
 param(
     [Parameter(Mandatory=$false)]
     [string]$Token = $env:MINEFLEET_ENROLLMENT_TOKEN,
 
     [Parameter(Mandatory=$false)]
-    [string]$Controller = $env:MINEFLEET_CONTROLLER_URL
+    [string]$Controller = $env:MINEFLEET_CONTROLLER_URL,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$NonInteractive = $false
 )
 
 $ErrorActionPreference = "Stop"
 
-function Write-Info { param($msg) Write-Host "[INFO] $msg" -ForegroundColor Green }
-function Write-Warn { param($msg) Write-Host "[WARN] $msg" -ForegroundColor Yellow }
-function Write-Err { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
+# Setup directories early for logging
+$InstallDir = "C:\Program Files\MineFleet"
+$DataDir = "C:\ProgramData\MineFleet"
+$LogDir = "$DataDir\logs"
+$LogFile = "$DataDir\installer.log"
 
-# Check admin and auto-elevate if needed
+try {
+    New-Item -ItemType Directory -Force -Path $InstallDir -ErrorAction SilentlyContinue | Out-Null
+    New-Item -ItemType Directory -Force -Path $DataDir -ErrorAction SilentlyContinue | Out-Null
+    New-Item -ItemType Directory -Force -Path $LogDir -ErrorAction SilentlyContinue | Out-Null
+} catch {}
+
+function Log-Msg {
+    param($lvl, $msg)
+    try {
+        $ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        $line = "[$ts] [$lvl] $msg"
+        Add-Content -Path $LogFile -Value $line -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+function Write-Info { param($msg) Write-Host "[INFO] $msg" -ForegroundColor Green; Log-Msg "INFO" $msg }
+function Write-Warn { param($msg) Write-Host "[WARN] $msg" -ForegroundColor Yellow; Log-Msg "WARN" $msg }
+function Write-Err {
+    param($msg)
+    Write-Host "`n[ERROR] $msg" -ForegroundColor Red
+    Log-Msg "ERROR" $msg
+    Write-Host "[INFO] Installation was not completed." -ForegroundColor Yellow
+    if (-not $NonInteractive) {
+        Write-Host "`nPress Enter to close..." -ForegroundColor Cyan
+        Read-Host
+    }
+    exit 1
+}
+
+# Check Administrator privileges and auto-elevate if needed
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Warn "Administrator privileges required. Requesting elevation..."
+    Log-Msg "INFO" "Requesting UAC elevation..."
     try {
-        Start-Process powershell.exe -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -NoProfile -Command `"`$Token='$Token'; `$Controller='$Controller'; irm '$Controller/install.ps1?token=$Token' | iex`""
-        exit 0
+        $elevatedCmd = "-ExecutionPolicy Bypass -NoProfile -NoExit -Command `"`$Token='$Token'; `$Controller='$Controller'; irm '$Controller/install.ps1?token=$Token' | iex`""
+        $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $elevatedCmd -Wait -PassThru
+        if ($p.ExitCode -ne 0 -and $null -ne $p.ExitCode) {
+            Write-Err "Installation in elevated window exited with code $($p.ExitCode)."
+        } else {
+            Write-Info "Elevated installation completed."
+        }
+        exit $p.ExitCode
     } catch {
-        Write-Err "Please open PowerShell as Administrator and run the command again."
+        Write-Err "Administrator privileges were not granted. Installation cancelled."
     }
 }
 
-if (-not $Token) { Write-Err "Enrollment token is required. Use -Token <TOKEN>" }
-if (-not $Controller) { Write-Err "Controller URL is required. Use -Controller https://your-controller.example.com" }
+if (-not $Token) { Write-Err "Enrollment token is required. Generate a new command from the dashboard." }
+if (-not $Controller) { $Controller = "https://minefleet.vercel.app" }
 
 # Clean trailing slash from Controller URL
 $Controller = $Controller.TrimEnd('/')
 
-Write-Info "Installing MineFleet Agent..."
+Write-Info "=================================================="
+Write-Info "Starting MineFleet Agent Installation..."
 Write-Info "Controller: $Controller"
+Write-Info "=================================================="
 
-# Directories
-$InstallDir = "C:\Program Files\MineFleet"
-$DataDir = "C:\ProgramData\MineFleet"
-$LogDir = "$DataDir\logs"
-
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-
-# Download agent (try binary first, fall back to standalone bundle)
-Write-Info "Downloading agent..."
-$hasBinary = $false
+# Download agent bundle from Controller
+Write-Info "Fetching agent bundle from controller..."
+$bundleDownloaded = $false
 try {
-    Invoke-WebRequest -Uri "$Controller/api/agent/download?os=windows&arch=x86_64" -OutFile "$InstallDir\minefleet-agent.exe" -UseBasicParsing
-    if ((Get-Item "$InstallDir\minefleet-agent.exe").Length -gt 1000) {
-        $hasBinary = $true
+    Invoke-WebRequest -Uri "$Controller/api/agent/bundle" -OutFile "$InstallDir\agent-bundle.js" -UseBasicParsing
+    if ((Get-Item "$InstallDir\agent-bundle.js").Length -gt 500) {
+        $bundleDownloaded = $true
+        Write-Info "Agent bundle downloaded successfully."
     }
 } catch {
-    # Fallback to bundle
+    Write-Warn "Could not fetch bundle: $($_.Exception.Message)"
 }
 
-if (-not $hasBinary) {
-    Write-Info "Fetching agent bundle..."
-    try {
-        Invoke-WebRequest -Uri "$Controller/api/agent/bundle" -OutFile "$InstallDir\agent-bundle.js" -UseBasicParsing
-    } catch {
-        Write-Err "Failed to download agent from $Controller"
-    }
+if (-not $bundleDownloaded) {
+    Write-Err "Failed to download agent bundle from $Controller. Please verify network connectivity."
 }
 
-# Generate machine UID
+# Generate hardware machine UID
 $fingerprint = "$env:COMPUTERNAME|$((Get-CimInstance Win32_Processor).Name)|windows|$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)|$((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory)"
 $sha = [System.Security.Cryptography.SHA256]::Create()
 $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fingerprint))
 $MachineUid = "mf_" + [BitConverter]::ToString($hash).Replace("-","").Substring(0,32).ToLower()
 
-# Collect system info
+# Collect system hardware info
+Write-Info "Scanning hardware inventory..."
 $cpu = Get-CimInstance Win32_Processor
 $os = Get-CimInstance Win32_OperatingSystem
 $ram = $os.TotalVisibleMemorySize * 1024
@@ -87,33 +118,46 @@ $systemInfo = @{
     cpuThreads = $cpu.NumberOfLogicalProcessors
     ramBytes = $ram
     gpus = @()
-    agentVersion = "0.1.0"
+    agentVersion = "0.2.0"
 }
 
 # Enroll with Controller
-Write-Info "Registering machine with controller..."
+Write-Info "Registering machine with MineFleet controller..."
 $body = @{
     enrollmentToken = $Token
     machineUid = $MachineUid
     systemInfo = $systemInfo
 } | ConvertTo-Json -Depth 3
 
+$response = $null
 try {
     $response = Invoke-RestMethod -Uri "$Controller/api/machines/enroll" -Method Post -Body $body -ContentType "application/json"
 } catch {
-    Write-Err "Failed to register with controller: $($_.Exception.Message)"
+    $errDetail = $_.Exception.Message
+    if ($_.Exception.Response) {
+        try {
+            $stream = $_.Exception.Response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($stream)
+            $errBody = $reader.ReadToEnd()
+            $errJson = $errBody | ConvertFrom-Json
+            if ($errJson.error.message) {
+                $errDetail = $errJson.error.message
+            }
+        } catch {}
+    }
+    Write-Err "Machine registration failed: $errDetail. Generate a new enrollment command from the dashboard."
 }
 
 $MachineId = $response.data.machineId
 $ApiToken = $response.data.machineApiToken
 
 if (-not $MachineId -or -not $ApiToken) {
-    Write-Err "Invalid enrollment response from controller."
+    Write-Err "Invalid enrollment response received from controller."
 }
 
 Write-Info "Machine registered successfully (ID: $MachineId)"
 
-# Write local agent config (mining disabled by default)
+# Write local agent config (mining strictly disabled by default)
 $config = @{
     machineId = $MachineId
     machineUid = $MachineUid
@@ -124,8 +168,29 @@ $config = @{
 } | ConvertTo-Json
 
 Set-Content -Path "$DataDir\agent.json" -Value $config
+Write-Info "Configuration saved (Mining: OFF by default)."
 
-# Download NSSM for reliable Windows Service management
+# Node.js runtime resolution
+$nodeCmd = $null
+$nodeCmdObj = Get-Command node -ErrorAction SilentlyContinue
+if ($nodeCmdObj) {
+    $nodeCmd = $nodeCmdObj.Source
+}
+if (-not $nodeCmd -and -not (Test-Path "$InstallDir\node.exe")) {
+    Write-Info "Downloading standalone Node.js runtime..."
+    try {
+        Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.0/win-x64/node.exe" -OutFile "$InstallDir\node.exe" -UseBasicParsing
+        if (Test-Path "$InstallDir\node.exe") {
+            $nodeCmd = "$InstallDir\node.exe"
+        }
+    } catch {
+        Write-Warn "Could not download standalone Node.js runtime automatically: $($_.Exception.Message)"
+    }
+} elseif (Test-Path "$InstallDir\node.exe") {
+    $nodeCmd = "$InstallDir\node.exe"
+}
+
+# Download NSSM for Windows Service management
 $nssmPath = "$InstallDir\nssm.exe"
 if (-not (Test-Path $nssmPath)) {
     Write-Info "Configuring Windows Service manager..."
@@ -143,12 +208,6 @@ if (-not (Test-Path $nssmPath)) {
 if (Test-Path $nssmPath) {
     & $nssmPath stop MineFleetAgent 2>$null
     & $nssmPath remove MineFleetAgent confirm 2>$null
-
-    $nodeCmd = $null
-    $nodeCmdObj = Get-Command node -ErrorAction SilentlyContinue
-    if ($nodeCmdObj) {
-        $nodeCmd = $nodeCmdObj.Source
-    }
 
     if (Test-Path "$InstallDir\minefleet-agent.exe") {
         & $nssmPath install MineFleetAgent "$InstallDir\minefleet-agent.exe"
@@ -180,5 +239,15 @@ if ($svc -and $svc.Status -eq 'Running') {
     Write-Info "  Service:     MineFleetAgent (Windows Service)"
     Write-Info "=================================================="
 } else {
-    Write-Info "MineFleet Agent installed. Start manually: node `"$InstallDir\agent-bundle.js`""
+    Write-Info "=================================================="
+    Write-Info "MineFleet Agent installed successfully!"
+    Write-Info "  Machine ID:  $MachineId"
+    Write-Info "  Mining:      OFF (Waiting for dashboard command)"
+    Write-Info "  Start with:  node `"$InstallDir\agent-bundle.js`""
+    Write-Info "=================================================="
+}
+
+if (-not $NonInteractive) {
+    Write-Host "`nInstallation finished. Press Enter to exit..." -ForegroundColor Cyan
+    Read-Host
 }

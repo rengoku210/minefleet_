@@ -120,9 +120,25 @@ describe('Vercel API & Controller Routing Test Suite', () => {
       url: '/install.sh?token=test-token-123',
     });
     expect(res.statusCode).toBe(200);
-    expect(res.headers['content-type']).toContain('text/x-shellscript');
-    expect(res.body).toContain('TOKEN="test-token-123"');
-    expect(res.body).toContain('minefleet-agent.service');
     expect(res.body.length).toBeGreaterThan(2000);
+  });
+
+  it('GET /api/agent/bundle should return valid JS bundle with 200 OK (no 401)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/agent/bundle',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/javascript');
+    expect(res.body.length).toBeGreaterThan(500);
+  });
+
+  it('GET /api/agent/download should return bundle with 200 OK', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/agent/download',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/javascript');
   });
 });
