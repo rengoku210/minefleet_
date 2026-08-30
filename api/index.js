@@ -2543,7 +2543,7 @@ async function buildApp(config) {
     // We use our own pino logger
   });
   app.addContentTypeParser(
-    ["application/json", "text/plain"],
+    "*",
     { parseAs: "buffer" },
     (req, body, done) => {
       if (!body || Buffer.isBuffer(body) && body.length === 0) {

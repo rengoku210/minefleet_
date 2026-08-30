@@ -22,9 +22,9 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     logger: false, // We use our own pino logger
   });
 
-  // Safe JSON content type parser for serverless payloads and PowerShell clients
+  // Safe universal content type parser for serverless payloads, empty POSTs, and PowerShell clients
   app.addContentTypeParser(
-    ['application/json', 'text/plain'],
+    '*',
     { parseAs: 'buffer' },
     (req, body, done) => {
       if (!body || (Buffer.isBuffer(body) && body.length === 0)) {
