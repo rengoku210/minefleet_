@@ -1,0 +1,25 @@
+{
+  "name": "@minefleet/protocol",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist .turbo"
+  },
+  "dependencies": {
+    "@minefleet/shared-types": "workspace:*"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.0",
+    "typescript": "^5.7.0"
+  }
+}

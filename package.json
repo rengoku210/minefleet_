@@ -1,0 +1,22 @@
+{
+  "name": "minefleet",
+  "private": true,
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "test": "turbo test",
+    "typecheck": "turbo typecheck",
+    "lint": "turbo lint",
+    "clean": "turbo clean",
+    "db:migrate": "pnpm --filter @minefleet/controller db:migrate",
+    "db:migrate:down": "pnpm --filter @minefleet/controller db:migrate:down"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.0"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
