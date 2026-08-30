@@ -33,8 +33,15 @@ export default async function handler(req: any, res: any) {
   try {
     const app = await getApp();
 
+    const matchedPath = req.headers?.['x-matched-path'] || req.headers?.['x-vercel-matched-path'];
+    let targetUrl = req.url || '/';
+    if (matchedPath && typeof matchedPath === 'string' && matchedPath !== '/api/index' && matchedPath !== '/api') {
+      const queryIdx = targetUrl.indexOf('?');
+      const query = queryIdx !== -1 ? targetUrl.substring(queryIdx) : '';
+      targetUrl = matchedPath + query;
+    }
+
     const method = req.method || 'GET';
-    const url = req.url || '/';
     const headers = req.headers || {};
 
     let payload: any = undefined;
@@ -47,7 +54,7 @@ export default async function handler(req: any, res: any) {
 
     const response = await app.inject({
       method,
-      url,
+      url: targetUrl,
       headers,
       payload,
     });

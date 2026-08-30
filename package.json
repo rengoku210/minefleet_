@@ -1,13 +1,14 @@
 {
   "name": "minefleet",
   "private": true,
+  "type": "module",
   "scripts": {
-    "build": "turbo build && node -e \"const fs=require('fs'); fs.cpSync('apps/dashboard/dist', 'dist', {recursive: true});\"",
+    "build": "turbo build && node -e \"const fs=require('fs'); fs.cpSync('apps/dashboard/dist', 'dist', {recursive: true}); fs.copyFileSync('apps/controller/dist/index.js', 'api/index.js');\"",
     "dev": "turbo dev",
     "test": "turbo test",
     "typecheck": "turbo typecheck",
     "lint": "turbo lint",
-    "clean": "turbo clean && rimraf dist",
+    "clean": "turbo clean && rimraf dist api/index.js",
     "build:controller": "pnpm --filter @minefleet/shared-types build && pnpm --filter @minefleet/protocol build && pnpm --filter @minefleet/controller build",
     "start:controller": "node apps/controller/dist/index.js"
   },
