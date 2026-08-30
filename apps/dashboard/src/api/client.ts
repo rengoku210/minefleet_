@@ -15,9 +15,15 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
+const getBaseUrl = () => {
+  const envUrl = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.VITE_CONTROLLER_URL : '';
+  return envUrl ? envUrl.replace(/\/$/, '') : '';
+};
+
 async function refreshToken(): Promise<boolean> {
   try {
-    const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' });
+    const url = `${getBaseUrl()}/api/auth/refresh`;
+    const res = await fetch(url, { method: 'POST', credentials: 'include' });
     if (!res.ok) return false;
     const data = await res.json();
     setAccessToken(data.data.accessToken);
@@ -35,7 +41,8 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   const token = getAccessToken();
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  let res = await fetch(path, { ...options, headers, credentials: 'include' });
+  const fullUrl = path.startsWith('http') ? path : `${getBaseUrl()}${path}`;
+  let res = await fetch(fullUrl, { ...options, headers, credentials: 'include' });
 
   if (res.status === 401 && token) {
     const refreshed = await refreshToken();
