@@ -144,7 +144,11 @@ if (Test-Path $nssmPath) {
     & $nssmPath stop MineFleetAgent 2>$null
     & $nssmPath remove MineFleetAgent confirm 2>$null
 
-    $nodeCmd = (Get-Command node -ErrorAction SilentlyContinue)?.Source
+    $nodeCmd = $null
+    $nodeCmdObj = Get-Command node -ErrorAction SilentlyContinue
+    if ($nodeCmdObj) {
+        $nodeCmd = $nodeCmdObj.Source
+    }
 
     if (Test-Path "$InstallDir\minefleet-agent.exe") {
         & $nssmPath install MineFleetAgent "$InstallDir\minefleet-agent.exe"
