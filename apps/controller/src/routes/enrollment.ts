@@ -22,8 +22,7 @@ export async function enrollmentRoutes(app: FastifyInstance): Promise<void> {
       });
 
       const config = loadConfig();
-      const origin = `${request.protocol}://${request.hostname}`;
-      const baseUrl = (config.controllerUrl && !config.controllerUrl.includes('localhost')) ? config.controllerUrl : origin;
+      const baseUrl = config.controllerUrl || 'https://minefleet.vercel.app';
 
       await auditLog(request, 'create_enrollment_token', 'enrollment_token', tokenInfo.id);
 

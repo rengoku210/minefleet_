@@ -33,6 +33,16 @@ export default function Machines() {
         method: 'POST',
         body: JSON.stringify({ label: enrollLabel || undefined, expiresInMinutes: 60 }),
       });
+
+      // Ensure stable canonical base URL
+      const origin = typeof window !== 'undefined' && window.location.origin && !window.location.origin.includes('localhost')
+        ? window.location.origin
+        : 'https://minefleet.vercel.app';
+      
+      const token = data.token;
+      data.installCommandWindows = `powershell -ExecutionPolicy Bypass -c "irm '${origin}/install.ps1?token=${token}' | iex"`;
+      data.installCommandLinux = `curl -fsSL "${origin}/install.sh?token=${token}" | bash`;
+
       setEnrollToken(data);
     } catch (err: any) {
       alert(err.message);
@@ -124,57 +134,56 @@ export default function Machines() {
               </div>
             )}
 
-            <button onClick={() => { setShowEnroll(false); setEnrollToken(null); setEnrollLabel(''); }}
-              className="mt-4 text-sm text-[var(--text-muted)] hover:underline">
-              Close
-            </button>
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={() => { setShowEnroll(false); setEnrollToken(null); setEnrollLabel(''); }}
+                className="px-4 py-2 bg-[var(--bg-hover)] text-sm rounded-lg"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Machine table */}
-      <div className="bg-[var(--bg-card)] rounded-xl border border-[var(--border)] overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-[var(--border)] text-left text-[var(--text-muted)]">
-              <th className="px-4 py-3">Name</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">OS</th>
-              <th className="px-4 py-3">CPU</th>
-              <th className="px-4 py-3">Group</th>
-              <th className="px-4 py-3">Last Seen</th>
-              <th className="px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {machines.map((m: any) => (
-              <tr key={m.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-hover)]">
-                <td className="px-4 py-3">
-                  <Link to={`/machines/${m.id}`} className="text-[var(--primary)] hover:underline">{m.name}</Link>
-                </td>
-                <td className="px-4 py-3">
-                  <span className={`inline-flex items-center gap-1 ${m.status === 'online' ? 'text-green-400' : 'text-red-400'}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${m.status === 'online' ? 'bg-green-400' : 'bg-red-400'}`}></span>
-                    {m.status}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-[var(--text-muted)]">{m.os}</td>
-                <td className="px-4 py-3 text-[var(--text-muted)] truncate max-w-48">{m.cpu_model}</td>
-                <td className="px-4 py-3 text-[var(--text-muted)]">{m.group_name || '—'}</td>
-                <td className="px-4 py-3 text-[var(--text-muted)]">
-                  {m.last_heartbeat ? new Date(m.last_heartbeat).toLocaleString() : 'Never'}
-                </td>
-                <td className="px-4 py-3">
-                  <button onClick={() => deleteMachine(m.id)} className="text-red-400 hover:text-red-300 text-xs">Delete</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {machines.length === 0 && (
-          <div className="p-8 text-center text-[var(--text-muted)]">No machines registered. Click "Add Machine" to get started.</div>
-        )}
-      </div>
+      {/* Machine list */}
+      {machines.length === 0 ? (
+        <div className="text-center py-12 text-[var(--text-muted)]">
+          No machines registered yet. Click "+ Add Machine" to enroll your first machine.
+        </div>
+      ) : (
+        <div className="grid gap-4">
+          {machines.map((m) => (
+            <div
+              key={m.id}
+              className="p-4 bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex items-center justify-between"
+            >
+              <div className="flex items-center gap-3">
+                <span className={`w-3 h-3 rounded-full ${m.status === 'online' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                <div>
+                  <Link to={`/machines/${m.id}`} className="font-semibold hover:underline">
+                    {m.name || m.hostname}
+                  </Link>
+                  <div className="text-xs text-[var(--text-muted)]">
+                    {m.hostname} • {m.os} • {m.cpuModel} • GPUs: {m.gpuCount || 0}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <span className="text-xs text-[var(--text-muted)]">
+                  Last seen: {m.lastHeartbeat ? new Date(m.lastHeartbeat).toLocaleTimeString() : 'Never'}
+                </span>
+                <button
+                  onClick={() => deleteMachine(m.id)}
+                  className="text-xs text-red-400 hover:text-red-300"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

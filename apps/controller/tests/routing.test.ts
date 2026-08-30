@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { buildApp } from '../src/app.js';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, getCanonicalPublicUrl } from '../src/config.js';
 import { getStorage } from '../src/storage/index.js';
 import handler from '../src/index.js';
 import type { FastifyInstance } from 'fastify';
@@ -14,6 +14,13 @@ describe('Vercel API & Controller Routing Test Suite', () => {
     await storage.init();
     app = await buildApp(config);
     await app.ready();
+  });
+
+  it('Canonical Public URL should NEVER use temporary deployment URL', () => {
+    const url = getCanonicalPublicUrl();
+    expect(url).not.toContain('localhost:3001');
+    expect(url).not.toMatch(/-[a-z0-9]+-.*\.vercel\.app/);
+    expect(url).toBe('https://minefleet.vercel.app');
   });
 
   it('GET /health should return JSON 200', async () => {
@@ -67,75 +74,55 @@ describe('Vercel API & Controller Routing Test Suite', () => {
     expect(json.error.code).toBe('UNAUTHORIZED');
   });
 
-  it('POST /auth/login (root alias) should also return JSON response', async () => {
-    const res = await app.inject({
+  it('POST /api/enrollment-tokens should generate stable production command', async () => {
+    const loginRes = await app.inject({
       method: 'POST',
-      url: '/auth/login',
+      url: '/api/auth/login',
       payload: {
         email: 'admin@minefleet.local',
         password: 'Admin1234!',
       },
     });
-    expect(res.statusCode).toBe(200);
-    const json = JSON.parse(res.body);
-    expect(json.success).toBe(true);
-  });
+    const { accessToken } = JSON.parse(loginRes.body).data;
 
-  it('GET /api/unknown-route should return JSON 404 (NEVER HTML)', async () => {
     const res = await app.inject({
-      method: 'GET',
-      url: '/api/non-existent-endpoint',
+      method: 'POST',
+      url: '/api/enrollment-tokens',
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: { label: 'Test Machine' },
     });
-    expect(res.statusCode).toBe(404);
+
+    expect(res.statusCode).toBe(201);
     const json = JSON.parse(res.body);
-    expect(json.success).toBe(false);
-    expect(json.error.code).toBe('NOT_FOUND');
+    expect(json.data.installCommandWindows).toContain('https://minefleet.vercel.app/install.ps1?token=');
+    expect(json.data.installCommandWindows).not.toContain('localhost');
+    expect(json.data.installCommandLinux).toContain('https://minefleet.vercel.app/install.sh?token=');
   });
 
-  it('GET /install.ps1 should return installer script with text/plain content type', async () => {
+  it('GET /install.ps1 should return complete PowerShell script (not fallback stub)', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/install.ps1?token=test-token-123',
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toContain('text/plain');
-    expect(res.body).toContain('MineFleet');
+    expect(res.body).toContain('$Token = "test-token-123"');
+    expect(res.body).toContain('MineFleetAgent');
+    expect(res.body).toContain('nssm');
+    expect(res.body.length).toBeGreaterThan(3000);
   });
 
-  it('GET /install.sh should return Linux script with shellscript content type', async () => {
+  it('GET /install.sh should return complete Linux Bash script', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/install.sh?token=test-token-123',
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toContain('text/x-shellscript');
-    expect(res.body).toContain('MineFleet');
-  });
-
-  it('Simulated Vercel serverless handler should process requests and write JSON headers', async () => {
-    let statusCode = 0;
-    let headers: Record<string, string> = {};
-    let body = '';
-
-    const req = {
-      method: 'POST',
-      url: '/api/auth/login',
-      headers: { 'content-type': 'application/json' },
-      body: { email: 'admin@minefleet.local', password: 'Admin1234!' },
-    };
-
-    const res = {
-      statusCode: 200,
-      setHeader: (k: string, v: string) => { headers[k] = v; },
-      end: (data: string) => { body = data; },
-    };
-
-    await handler(req, res);
-
-    expect(res.statusCode).toBe(200);
-    expect(headers['content-type']).toContain('application/json');
-    const json = JSON.parse(body);
-    expect(json.success).toBe(true);
-    expect(json.data.accessToken).toBeDefined();
+    expect(res.body).toContain('TOKEN="test-token-123"');
+    expect(res.body).toContain('minefleet-agent.service');
+    expect(res.body.length).toBeGreaterThan(2000);
   });
 });

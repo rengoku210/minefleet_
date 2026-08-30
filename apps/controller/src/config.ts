@@ -23,11 +23,24 @@ function optionalEnv(key: string, fallback: string): string {
   return process.env[key] || fallback;
 }
 
+export function getCanonicalPublicUrl(): string {
+  if (process.env.PUBLIC_APP_URL) {
+    return process.env.PUBLIC_APP_URL.replace(/\/+$/, '');
+  }
+  if (process.env.CONTROLLER_URL) {
+    return process.env.CONTROLLER_URL.replace(/\/+$/, '');
+  }
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL.replace(/\/+$/, '')}`;
+  }
+  return 'https://minefleet.vercel.app';
+}
+
 export function loadConfig(): AppConfig {
   return {
     host: optionalEnv('CONTROLLER_HOST', '0.0.0.0'),
     port: parseInt(optionalEnv('CONTROLLER_PORT', optionalEnv('PORT', '3001')), 10),
-    controllerUrl: optionalEnv('CONTROLLER_URL', optionalEnv('VERCEL_URL', 'http://localhost:3001')),
+    controllerUrl: getCanonicalPublicUrl(),
     storage: {
       redisUrl: process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL,
       redisToken: process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN,
