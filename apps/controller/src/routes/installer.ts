@@ -352,16 +352,20 @@ export async function installerRoutes(app: FastifyInstance): Promise<void> {
 
     let script = WINDOWS_INSTALLER_SCRIPT;
 
-    // Inject token and controller directly into script header
+    // Inject token and controller directly AFTER param() block
     if (token || effectiveController) {
-      let injectedDefaults = '';
+      let injectedDefaults = '\n# Injected configuration\n';
       if (token) {
-        injectedDefaults += `\nif (-not $Token) { $Token = "${token}" }`;
+        injectedDefaults += `if (-not $Token) { $Token = "${token}" }\n`;
       }
       if (effectiveController) {
-        injectedDefaults += `\nif (-not $Controller) { $Controller = "${effectiveController}" }`;
+        injectedDefaults += `if (-not $Controller) { $Controller = "${effectiveController}" }\n`;
       }
-      script = script.replace(/param\s*\([\s\S]*?\)/i, (match) => `${match}${injectedDefaults}`);
+      
+      const targetMarker = '$ErrorActionPreference = "Stop"';
+      if (script.includes(targetMarker)) {
+        script = script.replace(targetMarker, `${injectedDefaults}\n${targetMarker}`);
+      }
     }
 
     return reply

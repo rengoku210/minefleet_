@@ -2027,16 +2027,20 @@ async function installerRoutes(app) {
     const effectiveController = controller || config.controllerUrl || "https://minefleet.vercel.app";
     let script = WINDOWS_INSTALLER_SCRIPT;
     if (token || effectiveController) {
-      let injectedDefaults = "";
+      let injectedDefaults = "\n# Injected configuration\n";
       if (token) {
-        injectedDefaults += `
-if (-not $Token) { $Token = "${token}" }`;
+        injectedDefaults += `if (-not $Token) { $Token = "${token}" }
+`;
       }
       if (effectiveController) {
-        injectedDefaults += `
-if (-not $Controller) { $Controller = "${effectiveController}" }`;
+        injectedDefaults += `if (-not $Controller) { $Controller = "${effectiveController}" }
+`;
       }
-      script = script.replace(/param\s*\([\s\S]*?\)/i, (match) => `${match}${injectedDefaults}`);
+      const targetMarker = '$ErrorActionPreference = "Stop"';
+      if (script.includes(targetMarker)) {
+        script = script.replace(targetMarker, `${injectedDefaults}
+${targetMarker}`);
+      }
     }
     return reply.header("Content-Type", "text/plain; charset=utf-8").header("Cache-Control", "no-cache").send(script);
   };
