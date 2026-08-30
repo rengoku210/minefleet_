@@ -1,94 +1,47 @@
 # MineFleet Deployment Guide
 
-## Docker Compose (Recommended)
+## Target Architecture: Vercel Cloud (Unified Serverless)
 
-### Prerequisites
-- Docker Engine 24+
-- Docker Compose v2+
+MineFleet runs entirely on **Vercel** with **Upstash Redis** storage. No PostgreSQL database servers or dedicated VPS instances are required.
 
-### Setup
+---
 
-1. Clone the repository
-2. Navigate to the deploy directory:
-   ```bash
-   cd deploy
+## 🚀 Step-by-Step Vercel Setup
+
+### 1. Import to Vercel
+1. Go to **[vercel.com/new](https://vercel.com/new)**.
+2. Select your GitHub repository: **`rengoku210/minefleet`**.
+3. Leave **Root Directory** as `.`.
+
+### 2. Configure Persistent Storage (Upstash Redis)
+1. On Vercel, go to the **Storage** tab in your project.
+2. Click **Create Database** ➔ select **Upstash Redis** (Free tier).
+3. Vercel will automatically inject `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` into your environment variables.
+
+### 3. Environment Variables
+Ensure the following variables are set under **Project Settings ➔ Environment Variables**:
+
+| Variable | Description | Example |
+| :--- | :--- | :--- |
+| `ADMIN_EMAIL` | Administrator login email | `admin@minefleet.local` |
+| `ADMIN_PASSWORD` | Administrator initial password | `Admin1234!` |
+| `JWT_SECRET` | 64-character random string | `64_char_random_jwt_secret_key_abc123` |
+| `JWT_REFRESH_SECRET` | 64-character random string | `64_char_random_refresh_secret_key_xyz987` |
+| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL | `https://your-upstash.upstash.io` |
+| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST Token | `your_token_here` |
+
+### 4. Deploy
+Click **Deploy**. Once finished, you will receive your live dashboard URL (e.g. `https://minefleet.vercel.app`).
+
+---
+
+## 🖥️ Installing Agents on PCs
+
+1. Log into your dashboard at `https://minefleet.vercel.app`.
+2. Click **Machines** ➔ **+ Add Machine**.
+3. Copy the single-use installation command.
+4. On your PC, open PowerShell (as Administrator) and paste:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -c "irm 'https://minefleet.vercel.app/install.ps1?token=YOUR_TOKEN' | iex"
    ```
-3. Create your environment file:
-   ```bash
-   cp .env.example .env
-   ```
-4. Edit `.env` with secure values:
-   - `POSTGRES_PASSWORD` - strong database password
-   - `JWT_SECRET` - generate with `openssl rand -hex 32`
-   - `JWT_REFRESH_SECRET` - generate with `openssl rand -hex 32`
-   - `ADMIN_EMAIL` - your admin email
-   - `ADMIN_PASSWORD` - strong admin password
-   - `CONTROLLER_URL` - public URL of your controller
-
-5. Start the services:
-   ```bash
-   docker compose up -d
-   ```
-
-6. Check status:
-   ```bash
-   docker compose ps
-   docker compose logs controller
-   ```
-
-### Services
-
-| Service | Port | Description |
-|---------|------|-------------|
-| dashboard | 3000 | Web UI (nginx) |
-| controller | 3001 | API + WebSocket |
-| postgres | 5432 | Database |
-
-### Reverse Proxy (Production)
-
-For production, place nginx or Caddy in front:
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name minefleet.example.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://localhost:3000;
-    }
-
-    location /api/ {
-        proxy_pass http://localhost:3001;
-    }
-
-    location /ws/ {
-        proxy_pass http://localhost:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 86400;
-    }
-}
-```
-
-## Adding Machines
-
-1. Log into the dashboard at `https://your-domain.com`
-2. Navigate to **Machines** > **Add Machine**
-3. Copy the install command
-4. Run on the target PC:
-   - **Linux**: `curl -fsSL ... | sudo bash`
-   - **Windows**: Run PowerShell as Administrator
-
-## Backup
-
-```bash
-# Database backup
-docker compose exec postgres pg_dump -U minefleet minefleet > backup.sql
-
-# Restore
-cat backup.sql | docker compose exec -T postgres psql -U minefleet minefleet
-```
+5. The machine will enroll, scan hardware once, and start the background service with **Mining: OFF**.

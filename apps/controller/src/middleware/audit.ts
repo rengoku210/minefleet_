@@ -1,7 +1,8 @@
 import type { FastifyRequest } from 'fastify';
-import { query } from '../db/pool.js';
+import { getStorage } from '../storage/index.js';
 import { createChildLogger } from '../utils/logger.js';
 import type { JwtPayload } from './auth.js';
+import { randomUUID } from 'node:crypto';
 
 const logger = createChildLogger('audit');
 
@@ -14,13 +15,19 @@ export async function auditLog(
 ): Promise<void> {
   try {
     const user = (request as any).user as JwtPayload | undefined;
-    const ip = request.ip;
+    const storage = getStorage();
 
-    await query(
-      `INSERT INTO audit_logs (id, user_id, action, resource_type, resource_id, details, ip_address)
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
-      [user?.sub || null, action, resourceType, resourceId || null, details ? JSON.stringify(details) : null, ip],
-    );
+    await storage.logAudit({
+      id: randomUUID(),
+      userId: user?.sub || null,
+      userEmail: user?.email || null,
+      action,
+      resourceType,
+      resourceId: resourceId || null,
+      details,
+      ipAddress: request.ip,
+      createdAt: new Date().toISOString(),
+    });
   } catch (err) {
     logger.error({ err, action, resourceType }, 'Failed to write audit log');
   }

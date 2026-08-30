@@ -12,25 +12,34 @@ export default function MachineDetail() {
   const [selectedGroup, setSelectedGroup] = useState('');
   
   // Config state
-  const [cpuLimit, setCpuLimit] = useState(100);
+  const [cpuLimit, setCpuLimit] = useState(30);
   const [maxThreads, setMaxThreads] = useState(0);
-  const [enableGpu, setEnableGpu] = useState(true);
-  const [policy, setPolicy] = useState('balanced');
+  const [enableGpu, setEnableGpu] = useState(false);
+  const [policy, setPolicy] = useState('conservative');
   const [maxTemp, setMaxTemp] = useState(85);
 
   const loadMachine = async () => {
     try {
       const data = await api(`/api/machines/${id}`);
-      setMachine(data);
+      const m = data.machine || data;
+      const cfg = data.config || {};
+      const tel = data.latestTelemetry || data.telemetry || null;
+
+      setMachine({
+        ...m,
+        config: cfg,
+        telemetry: tel,
+      });
+
       if (loading) {
-        setNewName(data.name);
-        setSelectedGroup(data.group_id || '');
-        if (data.config) {
-          setCpuLimit(data.config.max_cpu_percent || 100);
-          setMaxThreads(data.config.max_threads || 0);
-          setEnableGpu(data.config.enable_gpu ?? true);
-          setPolicy(data.config.workload_policy || 'balanced');
-          setMaxTemp(data.config.max_temp_celsius || 85);
+        setNewName(m.name || '');
+        setSelectedGroup(m.group_id || m.groupId || '');
+        if (cfg) {
+          setCpuLimit(cfg.cpuLimitPercent ?? cfg.cpu_limit_percent ?? 30);
+          setMaxThreads(cfg.maxMiningThreads ?? cfg.max_mining_threads ?? 0);
+          setEnableGpu(cfg.gpuEnabled ?? cfg.gpu_enabled ?? false);
+          setPolicy(cfg.workloadPolicy || cfg.workload_policy || 'conservative');
+          setMaxTemp(cfg.tempPauseC ?? cfg.temp_pause_c ?? 85);
         }
         setLoading(false);
       }
@@ -41,7 +50,7 @@ export default function MachineDetail() {
 
   useEffect(() => {
     loadMachine();
-    api('/api/groups').then(d => setGroups(d.groups)).catch(console.error);
+    api('/api/groups').then((d: any) => setGroups(d.groups || [])).catch(console.error);
     
     const interval = setInterval(loadMachine, 5000);
     return () => clearInterval(interval);
@@ -52,14 +61,14 @@ export default function MachineDetail() {
       await api(`/api/machines/${id}/config`, {
         method: 'PATCH',
         body: JSON.stringify({
-          max_cpu_percent: cpuLimit,
-          max_threads: maxThreads,
-          enable_gpu: enableGpu,
-          workload_policy: policy,
-          max_temp_celsius: maxTemp
-        })
+          cpuLimitPercent: cpuLimit,
+          maxMiningThreads: maxThreads,
+          gpuEnabled: enableGpu,
+          workloadPolicy: policy,
+          tempPauseC: maxTemp,
+        }),
       });
-      alert('Config updated');
+      alert('Configuration updated and sent to machine');
       loadMachine();
     } catch (err: any) {
       alert(err.message);
@@ -72,8 +81,8 @@ export default function MachineDetail() {
         method: 'PATCH',
         body: JSON.stringify({
           name: newName,
-          group_id: selectedGroup || null
-        })
+          groupId: selectedGroup || null,
+        }),
       });
       alert('Machine updated');
       loadMachine();
@@ -93,6 +102,8 @@ export default function MachineDetail() {
 
   if (loading && !machine) return <div className="text-[var(--text-muted)]">Loading...</div>;
   if (!machine) return <div>Machine not found</div>;
+
+  const tel = machine.telemetry;
 
   return (
     <div className="space-y-6">
@@ -115,13 +126,13 @@ export default function MachineDetail() {
             <div>{machine.os}</div>
             
             <div className="text-[var(--text-muted)]">CPU</div>
-            <div>{machine.cpu_model}</div>
+            <div>{machine.cpu_model || machine.cpuModel}</div>
             
             <div className="text-[var(--text-muted)]">RAM</div>
-            <div>{Math.round((machine.total_ram_mb || 0) / 1024)} GB</div>
+            <div>{Math.round(((machine.ram_bytes || machine.ramBytes || 0) / (1024 * 1024 * 1024)))} GB</div>
             
             <div className="text-[var(--text-muted)]">GPUs</div>
-            <div>{machine.gpu_count}</div>
+            <div>{machine.gpu_count ?? (Array.isArray(machine.gpus) ? machine.gpus.length : 0)}</div>
           </div>
           
           <div className="pt-4 border-t border-[var(--border)] space-y-3">
@@ -142,28 +153,28 @@ export default function MachineDetail() {
 
         {/* Live Telemetry */}
         <div className="bg-[var(--bg-card)] rounded-xl border border-[var(--border)] p-4 space-y-4">
-          <h2 className="text-lg font-bold">Live Telemetry</h2>
-          {machine.telemetry ? (
+          <h2 className="text-lg font-bold">Live State</h2>
+          {tel ? (
             <div className="grid grid-cols-2 gap-4">
               <div className="p-3 bg-[var(--bg)] rounded-lg border border-[var(--border)]">
                 <div className="text-xs text-[var(--text-muted)]">CPU Usage</div>
-                <div className="text-xl font-bold">{(machine.telemetry.cpu_usage_percent || 0).toFixed(1)}%</div>
+                <div className="text-xl font-bold">{(tel.cpuPercent ?? tel.cpu_percent ?? 0).toFixed(1)}%</div>
               </div>
               <div className="p-3 bg-[var(--bg)] rounded-lg border border-[var(--border)]">
                 <div className="text-xs text-[var(--text-muted)]">RAM Usage</div>
-                <div className="text-xl font-bold">{(machine.telemetry.ram_usage_percent || 0).toFixed(1)}%</div>
+                <div className="text-xl font-bold">{(tel.ramPercent ?? tel.ram_percent ?? 0).toFixed(1)}%</div>
               </div>
               <div className="p-3 bg-[var(--bg)] rounded-lg border border-[var(--border)]">
                 <div className="text-xs text-[var(--text-muted)]">Temperature</div>
-                <div className="text-xl font-bold">{machine.telemetry.cpu_temp_c ? `${machine.telemetry.cpu_temp_c.toFixed(1)}°C` : 'N/A'}</div>
+                <div className="text-xl font-bold">{(tel.cpuTempC ?? tel.cpu_temp_c) ? `${(tel.cpuTempC ?? tel.cpu_temp_c).toFixed(1)}°C` : 'N/A'}</div>
               </div>
               <div className="p-3 bg-[var(--bg)] rounded-lg border border-[var(--border)]">
-                <div className="text-xs text-[var(--text-muted)]">Power Draw</div>
-                <div className="text-xl font-bold">{machine.telemetry.power_draw_watts ? `${machine.telemetry.power_draw_watts.toFixed(1)}W` : 'N/A'}</div>
+                <div className="text-xs text-[var(--text-muted)]">Mining Status</div>
+                <div className="text-xl font-bold uppercase text-green-400">{tel.miningStatus ?? tel.mining_status ?? 'IDLE'}</div>
               </div>
               <div className="p-3 bg-[var(--bg)] rounded-lg border border-[var(--border)] col-span-2">
                 <div className="text-xs text-[var(--text-muted)]">Hashrate</div>
-                <div className="text-xl font-bold">{(machine.telemetry.hashrate_hps || 0).toFixed(1)} H/s</div>
+                <div className="text-xl font-bold">{(tel.hashrate ?? 0).toFixed(1)} H/s</div>
               </div>
             </div>
           ) : (
@@ -175,8 +186,8 @@ export default function MachineDetail() {
         <div className="bg-[var(--bg-card)] rounded-xl border border-[var(--border)] p-4 space-y-4 col-span-2 lg:col-span-1">
           <h2 className="text-lg font-bold">Mining Controls</h2>
           <div className="flex gap-2">
-            <button onClick={() => executeAction('start')} className="flex-1 py-2 bg-green-500/20 text-green-400 rounded-lg text-sm font-medium hover:bg-green-500/30">Start</button>
-            <button onClick={() => executeAction('stop')} className="flex-1 py-2 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium hover:bg-red-500/30">Stop</button>
+            <button onClick={() => executeAction('start')} className="flex-1 py-2 bg-green-500/20 text-green-400 rounded-lg text-sm font-medium hover:bg-green-500/30">Start Mining</button>
+            <button onClick={() => executeAction('stop')} className="flex-1 py-2 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium hover:bg-red-500/30">Stop Mining</button>
           </div>
           <div className="flex gap-2">
             <button onClick={() => executeAction('pause')} className="flex-1 py-2 bg-yellow-500/20 text-yellow-400 rounded-lg text-sm font-medium hover:bg-yellow-500/30">Pause</button>

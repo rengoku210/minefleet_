@@ -1,36 +1,51 @@
 import { loadConfig } from './config.js';
-import { initPool, closePool } from './db/pool.js';
-import { initDatabaseSchema } from './db/schema.js';
+import { getStorage } from './storage/index.js';
 import { buildApp } from './app.js';
 import { logger } from './utils/logger.js';
-import { initConnectionRegistry } from './ws/connections.js';
 
+let appPromise: ReturnType<typeof buildApp> | null = null;
+
+export async function getApp() {
+  if (!appPromise) {
+    const config = loadConfig();
+    const storage = getStorage();
+    await storage.init();
+    appPromise = buildApp(config);
+  }
+  return appPromise;
+}
+
+// Handler for Vercel Serverless Function execution
+export default async function handler(req: any, res: any) {
+  const app = await getApp();
+  await app.ready();
+  app.server.emit('request', req, res);
+}
+
+// Standalone server entrypoint (Node / Docker / Local dev)
 async function main() {
+  if (process.env.VERCEL) {
+    // Under Vercel serverless, the exported handler handles incoming requests
+    return;
+  }
+
   const config = loadConfig();
   logger.info({ env: config.nodeEnv }, 'Starting MineFleet Controller');
 
-  // Initialize database
-  await initPool(config.database.connectionString);
-  await initDatabaseSchema();
+  const storage = getStorage();
+  await storage.init();
 
-  // Build app
   const app = await buildApp(config);
 
-  // Initialize WebSocket connection registry
-  initConnectionRegistry();
-
-  // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
     await app.close();
-    await closePool();
     process.exit(0);
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  // Start listening
   try {
     await app.listen({ host: config.host, port: config.port });
     logger.info({ host: config.host, port: config.port }, 'MineFleet Controller is running');

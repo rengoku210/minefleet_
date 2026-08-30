@@ -1,33 +1,47 @@
-import { queryOne } from '../db/pool.js';
+import { getStorage } from '../storage/index.js';
 import { hashPassword, verifyPassword } from '../utils/crypto.js';
-import { signJwt, type JwtPayload } from '../middleware/auth.js';
+import { signJwt, verifyJwt, type JwtPayload } from '../middleware/auth.js';
 import { UnauthorizedError } from '../utils/errors.js';
 import { loadConfig } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
+import { randomUUID } from 'node:crypto';
 
 const logger = createChildLogger('auth');
 
-interface UserRow {
-  id: string;
-  email: string;
-  password_hash: string;
-  role: string;
-}
-
 export async function login(email: string, password: string): Promise<{ accessToken: string; refreshToken: string; user: { id: string; email: string; role: string } }> {
-  const user = await queryOne<UserRow>(
-    'SELECT id, email, password_hash, role FROM users WHERE email = $1',
-    [email],
-  );
+  const storage = getStorage();
+  const normalizedEmail = email.toLowerCase().trim();
+  let user = await storage.getUserByEmail(normalizedEmail);
+
+  // Auto-seed default admin user on first login if no users exist
+  if (!user) {
+    const config = loadConfig();
+    const allUsers = await storage.listUsers();
+    if (allUsers.length === 0 && config.admin.email && config.admin.password) {
+      if (normalizedEmail === config.admin.email.toLowerCase().trim()) {
+        const passwordHash = await hashPassword(config.admin.password);
+        user = {
+          id: randomUUID(),
+          email: config.admin.email,
+          passwordHash,
+          role: 'admin',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        await storage.saveUser(user);
+        logger.info({ email: user.email }, 'Initialized default admin account');
+      }
+    }
+  }
 
   if (!user) {
-    logger.warn({ email }, 'Login attempt for non-existent user');
+    logger.warn({ email: normalizedEmail }, 'Login attempt for non-existent user');
     throw new UnauthorizedError('Invalid email or password');
   }
 
-  const valid = await verifyPassword(password, user.password_hash);
+  const valid = await verifyPassword(password, user.passwordHash);
   if (!valid) {
-    logger.warn({ email }, 'Login attempt with wrong password');
+    logger.warn({ email: normalizedEmail }, 'Login attempt with wrong password');
     throw new UnauthorizedError('Invalid email or password');
   }
 
@@ -45,7 +59,7 @@ export async function login(email: string, password: string): Promise<{ accessTo
     config.jwt.refreshExpiry,
   );
 
-  logger.info({ email, userId: user.id }, 'User logged in');
+  logger.info({ email: user.email, userId: user.id }, 'User logged in');
 
   return {
     accessToken,
@@ -56,10 +70,8 @@ export async function login(email: string, password: string): Promise<{ accessTo
 
 export async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string }> {
   const config = loadConfig();
-  
-  // Import verifyJwt here to avoid circular
-  const { verifyJwt } = await import('../middleware/auth.js');
-  
+  const storage = getStorage();
+
   let payload: JwtPayload;
   try {
     payload = verifyJwt(refreshToken, config.jwt.refreshSecret);
@@ -71,12 +83,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<{ access
     throw new UnauthorizedError('Invalid token type');
   }
 
-  // Verify user still exists
-  const user = await queryOne<UserRow>(
-    'SELECT id, email, role FROM users WHERE id = $1',
-    [payload.sub],
-  );
-
+  const user = await storage.getUserById(payload.sub);
   if (!user) {
     throw new UnauthorizedError('User no longer exists');
   }

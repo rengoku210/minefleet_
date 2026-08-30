@@ -1,6 +1,5 @@
 import { loadLocalConfig, getControllerUrl, getAgentVersion } from './config.js';
-import { AgentWebSocket } from './connection/websocket.js';
-import { ProtocolHandler } from './connection/protocol.js';
+import { AgentHttpClient } from './connection/http-client.js';
 import { MiningManager } from './mining/manager.js';
 import { ThermalProtection } from './safety/thermal.js';
 import { WorkloadProtection } from './safety/workload.js';
@@ -22,12 +21,11 @@ async function main() {
   const miningManager = new MiningManager();
   const thermalProtection = new ThermalProtection();
   const workloadProtection = new WorkloadProtection();
-  const ws = new AgentWebSocket(controllerUrl);
-  const protocol = new ProtocolHandler(ws, miningManager);
+  const httpClient = new AgentHttpClient(controllerUrl, miningManager);
 
   // Apply last known safe config if available
   if (localConfig.lastConfig) {
-    logger.info({ version: localConfig.lastConfigVersion }, 'Applying last known config');
+    logger.info({ version: localConfig.lastConfigVersion }, 'Applying last known safe config');
     await miningManager.applyConfig(localConfig.lastConfig);
     thermalProtection.setConfig(localConfig.lastConfig);
     workloadProtection.setConfig(localConfig.lastConfig);
@@ -38,16 +36,12 @@ async function main() {
     logger.info({ action, temp }, 'Thermal protection action');
     if (action === 'pause') {
       await miningManager.pause();
-      ws.send({ type: 'agent:mining_event', timestamp: Date.now(), payload: { event: 'paused', reason: `thermal: ${temp}°C` } });
     } else if (action === 'reduce') {
-      // Reduce to half the configured limit
       const config = localConfig.lastConfig;
       if (config) {
         await miningManager.applyConfig({ ...config, cpuLimitPercent: Math.floor(config.cpuLimitPercent / 2) });
       }
-      ws.send({ type: 'agent:mining_event', timestamp: Date.now(), payload: { event: 'reduced', reason: `thermal: ${temp}°C` } });
     } else {
-      // Resume normal operation
       if (localConfig.lastConfig) {
         await miningManager.applyConfig(localConfig.lastConfig);
       }
@@ -60,13 +54,11 @@ async function main() {
     logger.info({ action, cpu }, 'Workload protection action');
     if (action === 'pause') {
       await miningManager.pause();
-      ws.send({ type: 'agent:mining_event', timestamp: Date.now(), payload: { event: 'paused', reason: `workload: CPU ${cpu.toFixed(1)}%` } });
     } else if (action === 'reduce') {
       const config = localConfig.lastConfig;
       if (config) {
         await miningManager.applyConfig({ ...config, cpuLimitPercent: Math.floor(config.cpuLimitPercent / 2) });
       }
-      ws.send({ type: 'agent:mining_event', timestamp: Date.now(), payload: { event: 'reduced', reason: `workload: CPU ${cpu.toFixed(1)}%` } });
     } else {
       if (localConfig.lastConfig) {
         await miningManager.applyConfig(localConfig.lastConfig);
@@ -75,24 +67,17 @@ async function main() {
     }
   });
 
-  // Wire up WebSocket
-  ws.setMessageHandler((msg) => protocol.handleMessage(msg));
-  ws.setOnConnected(() => protocol.authenticate());
-  ws.setOnDisconnected(() => {
-    logger.warn('Disconnected from controller, continuing with last safe config');
-  });
-
-  // Start everything
+  // Start background tasks
   thermalProtection.start();
   workloadProtection.start();
-  ws.connect();
+  await httpClient.start(15000); // 15s interval
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Agent shutting down');
     thermalProtection.stop();
     workloadProtection.stop();
-    ws.shutdown();
+    httpClient.stop();
     await miningManager.destroy();
     process.exit(0);
   };

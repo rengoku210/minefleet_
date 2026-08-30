@@ -2,7 +2,6 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-import websocket from '@fastify/websocket';
 import cookie from '@fastify/cookie';
 import type { AppConfig } from './config.js';
 import { logger } from './utils/logger.js';
@@ -17,7 +16,6 @@ import { logRoutes } from './routes/logs.js';
 import { settingsRoutes } from './routes/settings.js';
 import { userRoutes } from './routes/users.js';
 import { installerRoutes } from './routes/installer.js';
-import { wsHandler } from './ws/handler.js';
 
 export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   const app = Fastify({
@@ -74,11 +72,9 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
   });
 
   await app.register(rateLimit, {
-    max: 100,
+    max: 200,
     timeWindow: '1 minute',
   });
-
-  await app.register(websocket);
 
   // Decorate with config
   app.decorate('config', config);
@@ -88,7 +84,12 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     return { status: 'ok', timestamp: new Date().toISOString() };
   });
 
-  // Installer and agent bundle routes
+  // Root welcome
+  app.get('/', async () => {
+    return { status: 'ok', name: 'MineFleet Controller API', version: '0.2.0' };
+  });
+
+  // Installer and agent bundle routes (/install.ps1, /install.sh, /api/agent/bundle)
   await app.register(installerRoutes);
 
   // API routes
@@ -97,17 +98,13 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     await api.register(userRoutes, { prefix: '/users' });
     await api.register(enrollmentRoutes, { prefix: '/enrollment-tokens' });
     await api.register(machineRoutes, { prefix: '/machines' });
+    await api.register(machineRoutes, { prefix: '/agent' }); // Alias /api/agent/heartbeat -> /api/machines/heartbeat
     await api.register(groupRoutes, { prefix: '/groups' });
     await api.register(scheduleRoutes, { prefix: '/schedules' });
     await api.register(statsRoutes, { prefix: '/stats' });
     await api.register(logRoutes, { prefix: '/logs' });
     await api.register(settingsRoutes, { prefix: '/settings' });
   }, { prefix: '/api' });
-
-  // WebSocket endpoint for agents
-  await app.register(async (ws) => {
-    ws.get('/agent', { websocket: true }, wsHandler);
-  }, { prefix: '/ws/v1' });
 
   return app;
 }

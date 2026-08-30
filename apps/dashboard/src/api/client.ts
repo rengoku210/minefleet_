@@ -53,7 +53,7 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
     const refreshed = await refreshToken();
     if (refreshed) {
       headers['Authorization'] = `Bearer ${getAccessToken()}`;
-      res = await fetch(path, { ...options, headers, credentials: 'include' });
+      res = await fetch(fullUrl, { ...options, headers, credentials: 'include' });
     }
   }
 

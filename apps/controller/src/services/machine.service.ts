@@ -1,61 +1,102 @@
-import { queryOne, queryAll, query } from '../db/pool.js';
+import { getStorage } from '../storage/index.js';
 import { hashToken } from '../utils/crypto.js';
 import { NotFoundError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
+import type { StoredMachine, MachineState } from '../storage/adapter.js';
 
-const logger = createChildLogger('machine');
+const logger = createChildLogger('machine-service');
 
-/** Authenticate a machine by API token, returns machine ID */
+/** Authenticate a machine by API token, returns machine ID & UID */
 export async function authenticateMachine(apiToken: string): Promise<{ machineId: string; machineUid: string } | null> {
+  const storage = getStorage();
   const tokenHash = hashToken(apiToken);
-  const result = await queryOne<{ machine_id: string; machine_uid: string }>(
-    `SELECT mc.machine_id, m.machine_uid
-     FROM machine_credentials mc
-     JOIN machines m ON m.id = mc.machine_id
-     WHERE mc.token_hash = $1 AND mc.revoked = false`,
-    [tokenHash],
-  );
-  return result ? { machineId: result.machine_id, machineUid: result.machine_uid } : null;
+  const machines = await storage.listMachines();
+
+  for (const m of machines) {
+    const cred = await storage.getMachineCredential(m.id);
+    if (cred && cred.tokenHash === tokenHash && !cred.revoked) {
+      return { machineId: m.id, machineUid: m.machineUid };
+    }
+  }
+
+  return null;
 }
 
-/** Get all machines with optional group info */
+/** Get all machines with calculated online status and group name */
 export async function listMachines() {
-  return queryAll(
-    `SELECT m.id, m.name, m.hostname, m.os, m.status, m.cpu_model,
-            jsonb_array_length(COALESCE(m.gpus, '[]'::jsonb)) as gpu_count,
-            m.agent_version, m.group_id, mg.name as group_name,
-            m.last_heartbeat
-     FROM machines m
-     LEFT JOIN machine_groups mg ON mg.id = m.group_id
-     ORDER BY m.name ASC`,
-  );
+  const storage = getStorage();
+  const machines = await storage.listMachines();
+  const groups = await storage.listGroups();
+  const groupMap = new Map(groups.map((g) => [g.id, g.name]));
+
+  const now = Date.now();
+  const result = [];
+
+  for (const m of machines) {
+    const lastSeenMs = m.lastHeartbeat ? new Date(m.lastHeartbeat).getTime() : 0;
+    const isOnline = lastSeenMs > 0 && (now - lastSeenMs) < 60000; // 60s timeout
+    const currentStatus = isOnline ? 'online' : 'offline';
+
+    // Update status in storage if it changed
+    if (m.status !== currentStatus) {
+      m.status = currentStatus;
+      await storage.saveMachine(m);
+    }
+
+    result.push({
+      id: m.id,
+      name: m.name,
+      hostname: m.hostname,
+      os: m.os,
+      status: m.status,
+      cpu_model: m.cpuModel,
+      gpu_count: m.gpus ? m.gpus.length : 0,
+      agent_version: m.agentVersion,
+      group_id: m.groupId || null,
+      group_name: m.groupId ? groupMap.get(m.groupId) || null : null,
+      last_heartbeat: m.lastHeartbeat || null,
+    });
+  }
+
+  return result.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Get a single machine with full details */
 export async function getMachine(machineId: string) {
-  const machine = await queryOne(
-    `SELECT m.*, mg.name as group_name
-     FROM machines m
-     LEFT JOIN machine_groups mg ON mg.id = m.group_id
-     WHERE m.id = $1`,
-    [machineId],
-  );
+  const storage = getStorage();
+  const machine = await storage.getMachineById(machineId);
   if (!machine) throw new NotFoundError('Machine');
 
-  const config = await queryOne(
-    'SELECT * FROM machine_configs WHERE machine_id = $1',
-    [machineId],
-  );
+  let groupName: string | null = null;
+  if (machine.groupId) {
+    const group = await storage.getGroup(machine.groupId);
+    groupName = group?.name || null;
+  }
 
-  const latestTelemetry = await queryOne(
-    'SELECT * FROM telemetry WHERE machine_id = $1 ORDER BY recorded_at DESC LIMIT 1',
-    [machineId],
-  );
+  const config = await storage.getMachineConfig(machineId);
+  const latestTelemetry = await storage.getMachineState(machineId);
 
-  return { machine, config, latestTelemetry };
+  // Compute online status
+  const lastSeenMs = machine.lastHeartbeat ? new Date(machine.lastHeartbeat).getTime() : 0;
+  const isOnline = lastSeenMs > 0 && (Date.now() - lastSeenMs) < 60000;
+  machine.status = isOnline ? 'online' : 'offline';
+
+  return {
+    machine: {
+      ...machine,
+      group_name: groupName,
+      cpu_model: machine.cpuModel,
+      cpu_cores: machine.cpuCores,
+      cpu_threads: machine.cpuThreads,
+      ram_bytes: machine.ramBytes,
+      last_heartbeat: machine.lastHeartbeat,
+    },
+    config,
+    latestTelemetry,
+  };
 }
 
-/** Update machine's system info (called when agent reconnects) */
+/** Update machine's system info */
 export async function updateMachineSystemInfo(
   machineId: string,
   info: {
@@ -70,20 +111,22 @@ export async function updateMachineSystemInfo(
     agentVersion: string;
   },
 ): Promise<void> {
-  await query(
-    `UPDATE machines SET
-      hostname = $2, os = $3, os_version = $4,
-      cpu_model = $5, cpu_cores = $6, cpu_threads = $7,
-      ram_bytes = $8, gpus = $9, agent_version = $10,
-      updated_at = NOW()
-     WHERE id = $1`,
-    [
-      machineId,
-      info.hostname, info.os, info.osVersion,
-      info.cpuModel, info.cpuCores, info.cpuThreads,
-      info.ramBytes, JSON.stringify(info.gpus), info.agentVersion,
-    ],
-  );
+  const storage = getStorage();
+  const machine = await storage.getMachineById(machineId);
+  if (!machine) return;
+
+  machine.hostname = info.hostname;
+  machine.os = info.os;
+  machine.osVersion = info.osVersion;
+  machine.cpuModel = info.cpuModel;
+  machine.cpuCores = info.cpuCores;
+  machine.cpuThreads = info.cpuThreads;
+  machine.ramBytes = info.ramBytes;
+  machine.gpus = info.gpus || [];
+  machine.agentVersion = info.agentVersion;
+  machine.updatedAt = new Date().toISOString();
+
+  await storage.saveMachine(machine);
 }
 
 /** Update machine status and heartbeat */
@@ -91,29 +134,34 @@ export async function updateMachineHeartbeat(
   machineId: string,
   ipAddress?: string,
 ): Promise<void> {
-  await query(
-    `UPDATE machines SET
-      status = 'online',
-      last_heartbeat = NOW(),
-      ip_address = COALESCE($2, ip_address),
-      updated_at = NOW()
-     WHERE id = $1`,
-    [machineId, ipAddress || null],
-  );
+  const storage = getStorage();
+  const machine = await storage.getMachineById(machineId);
+  if (!machine) return;
+
+  machine.status = 'online';
+  machine.lastHeartbeat = new Date().toISOString();
+  if (ipAddress) machine.ipAddress = ipAddress;
+  machine.updatedAt = new Date().toISOString();
+
+  await storage.saveMachine(machine);
 }
 
 /** Mark machine as offline */
 export async function markMachineOffline(machineId: string): Promise<void> {
-  await query(
-    "UPDATE machines SET status = 'offline', updated_at = NOW() WHERE id = $1",
-    [machineId],
-  );
+  const storage = getStorage();
+  const machine = await storage.getMachineById(machineId);
+  if (!machine) return;
+
+  machine.status = 'offline';
+  machine.updatedAt = new Date().toISOString();
+  await storage.saveMachine(machine);
 }
 
-/** Delete a machine and all associated data (cascades via FK) */
+/** Delete a machine */
 export async function deleteMachine(machineId: string): Promise<void> {
-  const result = await query('DELETE FROM machines WHERE id = $1', [machineId]);
-  if (result.rowCount === 0) {
+  const storage = getStorage();
+  const deleted = await storage.deleteMachine(machineId);
+  if (!deleted) {
     throw new NotFoundError('Machine');
   }
   logger.info({ machineId }, 'Machine deleted');
@@ -121,21 +169,27 @@ export async function deleteMachine(machineId: string): Promise<void> {
 
 /** Update machine name */
 export async function updateMachineName(machineId: string, name: string): Promise<void> {
-  const result = await query(
-    'UPDATE machines SET name = $2, updated_at = NOW() WHERE id = $1',
-    [machineId, name],
-  );
-  if (result.rowCount === 0) throw new NotFoundError('Machine');
+  const storage = getStorage();
+  const machine = await storage.getMachineById(machineId);
+  if (!machine) throw new NotFoundError('Machine');
+
+  machine.name = name;
+  machine.updatedAt = new Date().toISOString();
+  await storage.saveMachine(machine);
 }
 
 /** Move machine to a group */
 export async function updateMachineGroup(machineId: string, groupId: string | null): Promise<void> {
+  const storage = getStorage();
+  const machine = await storage.getMachineById(machineId);
+  if (!machine) throw new NotFoundError('Machine');
+
   if (groupId) {
-    const group = await queryOne('SELECT id FROM machine_groups WHERE id = $1', [groupId]);
+    const group = await storage.getGroup(groupId);
     if (!group) throw new NotFoundError('Machine group');
   }
-  await query(
-    'UPDATE machines SET group_id = $2, updated_at = NOW() WHERE id = $1',
-    [machineId, groupId],
-  );
+
+  machine.groupId = groupId;
+  machine.updatedAt = new Date().toISOString();
+  await storage.saveMachine(machine);
 }
