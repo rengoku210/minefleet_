@@ -105,11 +105,49 @@ $MachineUid = "mf_" + [BitConverter]::ToString($hash).Replace("-","").Substring(
 
 # Collect system hardware info
 Write-Info "Scanning hardware inventory..."
-$cpu = Get-CimInstance Win32_Processor
-$os = Get-CimInstance Win32_OperatingSystem
+$cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+$cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue
+$os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+
 $cpuName = if ($cpu -is [array]) { $cpu[0].Name } else { $cpu.Name }
 $cpuCores = if ($cpu -is [array]) { ($cpu | Measure-Object -Property NumberOfCores -Sum).Sum } else { $cpu.NumberOfCores }
 $cpuThreads = if ($cpu -is [array]) { ($cpu | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum } else { $cpu.NumberOfLogicalProcessors }
+
+# Total Physical Memory in Bytes
+$ramBytes = [int64]0
+if ($cs -and $cs.TotalPhysicalMemory) {
+    $ramBytes = [int64]$cs.TotalPhysicalMemory
+} elseif ($os -and $os.TotalVisibleMemorySize) {
+    $ramBytes = [int64]($os.TotalVisibleMemorySize * 1024)
+}
+
+# GPU Hardware Detection
+$gpus = @()
+$videoControllers = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
+if ($videoControllers) {
+    $gpuIdx = 0
+    foreach ($vc in $videoControllers) {
+        if ($vc.Name -and $vc.Name -notmatch "Microsoft Basic Display|RDP|Remote|Virtual|VBox|VMware") {
+            $vram = [int64]0
+            if ($vc.AdapterRAM -and $vc.AdapterRAM -gt 0) {
+                $vram = [int64]$vc.AdapterRAM
+            }
+            $vendor = "Unknown"
+            if ($vc.AdapterCompatibility -match "NVIDIA" -or $vc.Name -match "NVIDIA|GeForce|RTX|GTX|Quadro") { $vendor = "NVIDIA" }
+            elseif ($vc.AdapterCompatibility -match "Advanced Micro Devices|AMD|ATI" -or $vc.Name -match "Radeon|AMD") { $vendor = "AMD" }
+            elseif ($vc.AdapterCompatibility -match "Intel" -or $vc.Name -match "Intel|UHD|Iris|HD Graphics") { $vendor = "Intel" }
+
+            $gpus += @{
+                index = $gpuIdx
+                name = ($vc.Name -as [string])
+                vendor = $vendor
+                memoryTotal = $vram
+                driver = ($vc.DriverVersion -as [string])
+            }
+            $gpuIdx++
+        }
+    }
+}
 
 $systemInfo = @{
     hostname = $env:COMPUTERNAME
@@ -118,8 +156,8 @@ $systemInfo = @{
     cpuModel = ($cpuName -as [string])
     cpuCores = [int]($cpuCores)
     cpuThreads = [int]($cpuThreads)
-    ramBytes = [int64]($ram)
-    gpus = @()
+    ramBytes = [int64]($ramBytes)
+    gpus = $gpus
     agentVersion = "0.2.0"
 }
 

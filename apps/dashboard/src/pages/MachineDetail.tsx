@@ -91,12 +91,19 @@ export default function MachineDetail() {
     }
   };
 
+  const [actionStatus, setActionStatus] = useState<string | null>(null);
+
   const executeAction = async (action: string) => {
     try {
+      setActionStatus(`Sending ${action.toUpperCase()} command...`);
       await api(`/api/machines/${id}/${action}`, { method: 'POST' });
-      loadMachine();
+      setActionStatus(`✓ Command '${action.toUpperCase()}' dispatched. Awaiting machine acknowledgment...`);
+      setTimeout(loadMachine, 1500);
+      setTimeout(loadMachine, 4000);
+      setTimeout(() => setActionStatus(null), 6000);
     } catch (err: any) {
       alert(err.message);
+      setActionStatus(null);
     }
   };
 
@@ -114,6 +121,12 @@ export default function MachineDetail() {
         </div>
       </div>
 
+      {actionStatus && (
+        <div className="p-3 bg-blue-500/20 border border-blue-500/30 rounded-lg text-sm text-blue-400 font-medium">
+          {actionStatus}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-6">
         {/* Hardware & Info */}
         <div className="bg-[var(--bg-card)] rounded-xl border border-[var(--border)] p-4 space-y-4">
@@ -126,13 +139,17 @@ export default function MachineDetail() {
             <div>{machine.os}</div>
             
             <div className="text-[var(--text-muted)]">CPU</div>
-            <div>{machine.cpu_model || machine.cpuModel}</div>
+            <div>{machine.cpu_model || machine.cpuModel} ({machine.cpu_cores || machine.cpuCores || 1}C / {machine.cpu_threads || machine.cpuThreads || 1}T)</div>
             
             <div className="text-[var(--text-muted)]">RAM</div>
-            <div>{Math.round(((machine.ram_bytes || machine.ramBytes || 0) / (1024 * 1024 * 1024)))} GB</div>
+            <div>{Math.round(((machine.ram_bytes || machine.ramBytes || 0) / (1024 * 1024 * 1024)))} GB Total</div>
             
             <div className="text-[var(--text-muted)]">GPUs</div>
-            <div>{machine.gpu_count ?? (Array.isArray(machine.gpus) ? machine.gpus.length : 0)}</div>
+            <div>
+              {Array.isArray(machine.gpus) && machine.gpus.length > 0
+                ? machine.gpus.map((g: any) => `${g.name} (${g.vendor})`).join(', ')
+                : (machine.gpu_count ? `${machine.gpu_count} GPU(s)` : '0 (None detected)')}
+            </div>
           </div>
           
           <div className="pt-4 border-t border-[var(--border)] space-y-3">
@@ -170,7 +187,9 @@ export default function MachineDetail() {
               </div>
               <div className="p-3 bg-[var(--bg)] rounded-lg border border-[var(--border)]">
                 <div className="text-xs text-[var(--text-muted)]">Mining Status</div>
-                <div className="text-xl font-bold uppercase text-green-400">{tel.miningStatus ?? tel.mining_status ?? 'IDLE'}</div>
+                <div className={`text-xl font-bold uppercase ${(tel.miningStatus ?? tel.mining_status) === 'mining' ? 'text-green-400' : 'text-slate-400'}`}>
+                  {tel.miningStatus ?? tel.mining_status ?? 'IDLE'}
+                </div>
               </div>
               <div className="p-3 bg-[var(--bg)] rounded-lg border border-[var(--border)] col-span-2">
                 <div className="text-xs text-[var(--text-muted)]">Hashrate</div>

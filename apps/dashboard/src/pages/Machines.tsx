@@ -165,7 +165,7 @@ export default function Machines() {
                     {m.name || m.hostname}
                   </Link>
                   <div className="text-xs text-[var(--text-muted)]">
-                    {m.hostname} • {m.os} • {m.cpuModel} • GPUs: {m.gpuCount || 0}
+                    {m.hostname} • {m.os} • {m.cpu_model || m.cpuModel || 'CPU'} • RAM: {Math.round(((m.ram_bytes || m.ramBytes || 0) / (1024 * 1024 * 1024)))} GB • GPUs: {m.gpu_count ?? (Array.isArray(m.gpus) ? m.gpus.length : 0)}
                   </div>
                 </div>
               </div>
