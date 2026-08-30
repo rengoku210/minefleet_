@@ -2,16 +2,17 @@
   "name": "minefleet",
   "private": true,
   "scripts": {
-    "build": "turbo build",
+    "build": "turbo build && node -e \"const fs=require('fs'); fs.cpSync('apps/dashboard/dist', 'dist', {recursive: true});\"",
     "dev": "turbo dev",
     "test": "turbo test",
     "typecheck": "turbo typecheck",
     "lint": "turbo lint",
-    "clean": "turbo clean",
+    "clean": "turbo clean && rimraf dist",
     "build:controller": "pnpm --filter @minefleet/shared-types build && pnpm --filter @minefleet/protocol build && pnpm --filter @minefleet/controller build",
     "start:controller": "node apps/controller/dist/index.js"
   },
   "devDependencies": {
+    "rimraf": "^6.0.0",
     "turbo": "^2.4.0",
     "typescript": "^5.7.0"
   },
