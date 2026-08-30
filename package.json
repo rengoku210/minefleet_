@@ -8,6 +8,8 @@
     "typecheck": "turbo typecheck",
     "lint": "turbo lint",
     "clean": "turbo clean",
+    "build:controller": "pnpm --filter @minefleet/shared-types build && pnpm --filter @minefleet/protocol build && pnpm --filter @minefleet/controller build",
+    "start:controller": "pnpm --filter @minefleet/controller db:migrate && pnpm --filter @minefleet/controller seed && node apps/controller/dist/index.js",
     "db:migrate": "pnpm --filter @minefleet/controller db:migrate",
     "db:migrate:down": "pnpm --filter @minefleet/controller db:migrate:down"
   },
