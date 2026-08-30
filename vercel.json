@@ -1,16 +1,19 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "vite",
   "buildCommand": "pnpm build",
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    },
+    {
       "source": "/install.ps1",
-      "destination": "/api/install.ps1"
+      "destination": "/api/index"
     },
     {
       "source": "/install.sh",
-      "destination": "/api/install.sh"
+      "destination": "/api/index"
     },
     {
       "source": "/((?!api/|install\\.ps1|install\\.sh).*)",
