@@ -1859,16 +1859,18 @@ $MachineUid = "mf_" + [BitConverter]::ToString($hash).Replace("-","").Substring(
 Write-Info "Scanning hardware inventory..."
 $cpu = Get-CimInstance Win32_Processor
 $os = Get-CimInstance Win32_OperatingSystem
-$ram = $os.TotalVisibleMemorySize * 1024
+$cpuName = if ($cpu -is [array]) { $cpu[0].Name } else { $cpu.Name }
+$cpuCores = if ($cpu -is [array]) { ($cpu | Measure-Object -Property NumberOfCores -Sum).Sum } else { $cpu.NumberOfCores }
+$cpuThreads = if ($cpu -is [array]) { ($cpu | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum } else { $cpu.NumberOfLogicalProcessors }
 
 $systemInfo = @{
     hostname = $env:COMPUTERNAME
     os = "windows"
-    osVersion = $os.Caption
-    cpuModel = $cpu.Name
-    cpuCores = $cpu.NumberOfCores
-    cpuThreads = $cpu.NumberOfLogicalProcessors
-    ramBytes = $ram
+    osVersion = ($os.Caption -as [string])
+    cpuModel = ($cpuName -as [string])
+    cpuCores = [int]($cpuCores)
+    cpuThreads = [int]($cpuThreads)
+    ramBytes = [int64]($ram)
     gpus = @()
     agentVersion = "0.2.0"
 }
@@ -1879,11 +1881,12 @@ $body = @{
     enrollmentToken = $Token
     machineUid = $MachineUid
     systemInfo = $systemInfo
-} | ConvertTo-Json -Depth 3
+} | ConvertTo-Json -Depth 5 -Compress
 
 $response = $null
 try {
-    $response = Invoke-RestMethod -Uri "$Controller/api/machines/enroll" -Method Post -Body $body -ContentType "application/json"
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+    $response = Invoke-RestMethod -Uri "$Controller/api/machines/enroll" -Method Post -Body $bodyBytes -ContentType "application/json; charset=utf-8"
 } catch {
     $errDetail = $_.Exception.Message
     if ($_.Exception.Response) {
@@ -2298,20 +2301,23 @@ async function buildApp(config) {
     logger: false
     // We use our own pino logger
   });
-  app.addContentTypeParser("application/json", { parseAs: "string" }, (req, body, done) => {
-    if (!body || body === "") {
-      return done(null, {});
+  app.addContentTypeParser(
+    ["application/json", "text/plain"],
+    { parseAs: "buffer" },
+    (req, body, done) => {
+      if (!body || Buffer.isBuffer(body) && body.length === 0) {
+        return done(null, {});
+      }
+      try {
+        const str = Buffer.isBuffer(body) ? body.toString("utf-8") : String(body);
+        if (!str.trim()) return done(null, {});
+        const json = JSON.parse(str);
+        done(null, json);
+      } catch (err) {
+        done(null, {});
+      }
     }
-    if (typeof body === "object") {
-      return done(null, body);
-    }
-    try {
-      const json = JSON.parse(body);
-      done(null, json);
-    } catch (err) {
-      done(null, {});
-    }
-  });
+  );
   app.setErrorHandler((error, request, reply) => {
     const statusCode = error.statusCode || (error instanceof AppError ? error.statusCode : void 0);
     if (statusCode && statusCode >= 400 && statusCode < 500) {

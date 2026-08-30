@@ -22,21 +22,24 @@ export async function buildApp(config: AppConfig): Promise<FastifyInstance> {
     logger: false, // We use our own pino logger
   });
 
-  // Safe JSON content type parser for serverless payloads
-  app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
-    if (!body || body === '') {
-      return done(null, {});
+  // Safe JSON content type parser for serverless payloads and PowerShell clients
+  app.addContentTypeParser(
+    ['application/json', 'text/plain'],
+    { parseAs: 'buffer' },
+    (req, body, done) => {
+      if (!body || (Buffer.isBuffer(body) && body.length === 0)) {
+        return done(null, {});
+      }
+      try {
+        const str = Buffer.isBuffer(body) ? body.toString('utf-8') : String(body);
+        if (!str.trim()) return done(null, {});
+        const json = JSON.parse(str);
+        done(null, json);
+      } catch (err: any) {
+        done(null, {});
+      }
     }
-    if (typeof body === 'object') {
-      return done(null, body);
-    }
-    try {
-      const json = JSON.parse(body);
-      done(null, json);
-    } catch (err: any) {
-      done(null, {});
-    }
-  });
+  );
 
   // Global error handler
   app.setErrorHandler((error: any, request, reply) => {
