@@ -98,6 +98,8 @@ export class MemoryStorageAdapter implements StorageAdapter {
     return this.machines.delete(id);
   }
 
+  private credTokenHashMap = new Map<string, string>(); // tokenHash -> machineId
+
   // Credentials
   async getMachineCredential(machineId: string): Promise<StoredCredential | null> {
     return this.credentials.get(machineId) || null;
@@ -105,6 +107,11 @@ export class MemoryStorageAdapter implements StorageAdapter {
 
   async saveMachineCredential(cred: StoredCredential): Promise<void> {
     this.credentials.set(cred.machineId, { ...cred });
+    this.credTokenHashMap.set(cred.tokenHash, cred.machineId);
+  }
+
+  async getMachineIdByTokenHash(tokenHash: string): Promise<string | null> {
+    return this.credTokenHashMap.get(tokenHash) || null;
   }
 
   // Configurations

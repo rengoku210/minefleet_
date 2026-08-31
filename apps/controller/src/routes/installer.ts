@@ -213,9 +213,10 @@ $config = @{
     machineUid = $MachineUid
     controllerUrl = $Controller
     apiToken = $ApiToken
+    gpus = $gpus
     lastConfig = $null
     lastConfigVersion = 0
-} | ConvertTo-Json
+} | ConvertTo-Json -Depth 5
 
 Set-Content -Path "$DataDir\\agent.json" -Value $config
 Write-Info "Configuration saved (Mining: OFF by default)."
@@ -357,10 +358,41 @@ if (Test-Path $nssmPath) {
     Start-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
 }
 
-Start-Sleep -Seconds 2
+# Post-installation verification
+Write-Info "Verifying service status..."
+$svcRunning = $false
+for ($i = 1; $i -le 15; $i++) {
+    $svc = Get-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -eq 'Running') {
+        $svcRunning = $true
+        break
+    }
+    if ($svc -and $svc.Status -eq 'Stopped') {
+        Start-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 1
+}
 
-$svc = Get-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
-if ($svc -and $svc.Status -eq 'Running') {
+if (-not $svcRunning) {
+    Write-Warn "Service is not Running after 15 seconds."
+    $errLog = "$LogDir\\agent-error.log"
+    if (Test-Path $errLog) {
+        Write-Warn "Last error log entries:"
+        Get-Content $errLog -Tail 10 | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+    }
+    $stdLog = "$LogDir\\agent.log"
+    if (Test-Path $stdLog) {
+        Write-Warn "Last stdout log entries:"
+        Get-Content $stdLog -Tail 10 | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+    }
+    Write-Info "=================================================="
+    Write-Info "MineFleet Agent installed but service may need attention."
+    Write-Info "Machine ID:         $MachineId"
+    Write-Info "Mining:             OFF"
+    Write-Info "Try manually:       Start-Service MineFleetAgent"
+    Write-Info "Check logs:         $LogDir"
+    Write-Info "=================================================="
+} else {
     Write-Info "=================================================="
     Write-Info "MineFleet Agent installation completed successfully."
     Write-Info "Service:            MineFleetAgent (Windows Service)"
@@ -369,13 +401,6 @@ if ($svc -and $svc.Status -eq 'Running') {
     Write-Info "Mining:             OFF"
     Write-Info "Automatic Startup:  ENABLED"
     Write-Info "The agent will continue running after this window is closed."
-    Write-Info "=================================================="
-} else {
-    Write-Info "=================================================="
-    Write-Info "MineFleet Agent installed successfully."
-    Write-Info "Machine ID:         $MachineId"
-    Write-Info "Mining:             OFF"
-    Write-Info "Start with:         Start-Service MineFleetAgent"
     Write-Info "=================================================="
 }
 
@@ -557,10 +582,10 @@ export async function installerRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     // Full production standalone agent bundle with command handling, dynamic telemetry, and mining engine
-    return `// MineFleet Standalone Production Agent Bundle
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { join } from "path";
-import { platform, hostname, release, cpus, totalmem, freemem } from "os";
+    return `// MineFleet Standalone Production Agent Bundle (CommonJS)
+const { readFileSync, writeFileSync, existsSync, mkdirSync } = require("fs");
+const { join } = require("path");
+const { platform, hostname, release, cpus, totalmem, freemem } = require("os");
 
 function getConfigDir() {
   if (platform() === "win32") return join(process.env.PROGRAMDATA || "C:\\\\ProgramData", "MineFleet");
@@ -682,7 +707,7 @@ async function startAgent() {
           cpuPercent: cpuUsagePct,
           ramPercent: ramUsagePct,
           gpuPercent: null,
-          cpuTempC: 43.5,
+          cpuTempC: null,
           gpuTempC: null,
           hashrate: currentHashrate,
           miningThreads: activeThreads,
@@ -703,6 +728,7 @@ async function startAgent() {
           cpuCores: cpus().length,
           cpuThreads: cpus().length,
           ramBytes: totMem,
+          gpus: cfg.gpus || [],
           agentVersion: "0.2.0"
         };
       }

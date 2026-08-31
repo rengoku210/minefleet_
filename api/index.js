@@ -123,12 +123,18 @@ var MemoryStorageAdapter = class {
     this.commandQueues.delete(id);
     return this.machines.delete(id);
   }
+  credTokenHashMap = /* @__PURE__ */ new Map();
+  // tokenHash -> machineId
   // Credentials
   async getMachineCredential(machineId) {
     return this.credentials.get(machineId) || null;
   }
   async saveMachineCredential(cred) {
     this.credentials.set(cred.machineId, { ...cred });
+    this.credTokenHashMap.set(cred.tokenHash, cred.machineId);
+  }
+  async getMachineIdByTokenHash(tokenHash) {
+    return this.credTokenHashMap.get(tokenHash) || null;
   }
   // Configurations
   async getMachineConfig(machineId) {
@@ -347,6 +353,10 @@ var UpstashRedisStorageAdapter = class {
   async deleteMachine(id) {
     const machine = await this.getMachineById(id);
     if (!machine) return false;
+    const cred = await this.getMachineCredential(id);
+    if (cred) {
+      await this.redis.del(`mf:cred_hash:${cred.tokenHash}`);
+    }
     await this.redis.del(`mf:machine:${id}`);
     await this.redis.del(`mf:uid_map:${machine.machineUid}`);
     await this.redis.del(`mf:cred:${id}`);
@@ -364,6 +374,11 @@ var UpstashRedisStorageAdapter = class {
   }
   async saveMachineCredential(cred) {
     await this.redis.set(`mf:cred:${cred.machineId}`, cred);
+    await this.redis.set(`mf:cred_hash:${cred.tokenHash}`, cred.machineId);
+  }
+  async getMachineIdByTokenHash(tokenHash) {
+    const machineId = await this.redis.get(`mf:cred_hash:${tokenHash}`);
+    return machineId || null;
   }
   // Configurations
   async getMachineConfig(machineId) {
@@ -863,10 +878,21 @@ var logger6 = createChildLogger("machine-service");
 async function authenticateMachine(apiToken) {
   const storage = getStorage();
   const tokenHash = hashToken(apiToken);
+  const machineId = await storage.getMachineIdByTokenHash(tokenHash);
+  if (machineId) {
+    const cred = await storage.getMachineCredential(machineId);
+    if (cred && !cred.revoked) {
+      const machine = await storage.getMachineById(machineId);
+      if (machine) {
+        return { machineId: machine.id, machineUid: machine.machineUid };
+      }
+    }
+  }
   const machines = await storage.listMachines();
   for (const m of machines) {
     const cred = await storage.getMachineCredential(m.id);
     if (cred && cred.tokenHash === tokenHash && !cred.revoked) {
+      await storage.saveMachineCredential(cred);
       return { machineId: m.id, machineUid: m.machineUid };
     }
   }
@@ -1959,9 +1985,10 @@ $config = @{
     machineUid = $MachineUid
     controllerUrl = $Controller
     apiToken = $ApiToken
+    gpus = $gpus
     lastConfig = $null
     lastConfigVersion = 0
-} | ConvertTo-Json
+} | ConvertTo-Json -Depth 5
 
 Set-Content -Path "$DataDir\\agent.json" -Value $config
 Write-Info "Configuration saved (Mining: OFF by default)."
@@ -2103,10 +2130,41 @@ if (Test-Path $nssmPath) {
     Start-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
 }
 
-Start-Sleep -Seconds 2
+# Post-installation verification
+Write-Info "Verifying service status..."
+$svcRunning = $false
+for ($i = 1; $i -le 15; $i++) {
+    $svc = Get-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -eq 'Running') {
+        $svcRunning = $true
+        break
+    }
+    if ($svc -and $svc.Status -eq 'Stopped') {
+        Start-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 1
+}
 
-$svc = Get-Service -Name MineFleetAgent -ErrorAction SilentlyContinue
-if ($svc -and $svc.Status -eq 'Running') {
+if (-not $svcRunning) {
+    Write-Warn "Service is not Running after 15 seconds."
+    $errLog = "$LogDir\\agent-error.log"
+    if (Test-Path $errLog) {
+        Write-Warn "Last error log entries:"
+        Get-Content $errLog -Tail 10 | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+    }
+    $stdLog = "$LogDir\\agent.log"
+    if (Test-Path $stdLog) {
+        Write-Warn "Last stdout log entries:"
+        Get-Content $stdLog -Tail 10 | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+    }
+    Write-Info "=================================================="
+    Write-Info "MineFleet Agent installed but service may need attention."
+    Write-Info "Machine ID:         $MachineId"
+    Write-Info "Mining:             OFF"
+    Write-Info "Try manually:       Start-Service MineFleetAgent"
+    Write-Info "Check logs:         $LogDir"
+    Write-Info "=================================================="
+} else {
     Write-Info "=================================================="
     Write-Info "MineFleet Agent installation completed successfully."
     Write-Info "Service:            MineFleetAgent (Windows Service)"
@@ -2115,13 +2173,6 @@ if ($svc -and $svc.Status -eq 'Running') {
     Write-Info "Mining:             OFF"
     Write-Info "Automatic Startup:  ENABLED"
     Write-Info "The agent will continue running after this window is closed."
-    Write-Info "=================================================="
-} else {
-    Write-Info "=================================================="
-    Write-Info "MineFleet Agent installed successfully."
-    Write-Info "Machine ID:         $MachineId"
-    Write-Info "Mining:             OFF"
-    Write-Info "Start with:         Start-Service MineFleetAgent"
     Write-Info "=================================================="
 }
 
@@ -2297,10 +2348,10 @@ async function installerRoutes(app) {
         return readFileSync(p, "utf-8");
       }
     }
-    return `// MineFleet Standalone Production Agent Bundle
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { join } from "path";
-import { platform, hostname, release, cpus, totalmem, freemem } from "os";
+    return `// MineFleet Standalone Production Agent Bundle (CommonJS)
+const { readFileSync, writeFileSync, existsSync, mkdirSync } = require("fs");
+const { join } = require("path");
+const { platform, hostname, release, cpus, totalmem, freemem } = require("os");
 
 function getConfigDir() {
   if (platform() === "win32") return join(process.env.PROGRAMDATA || "C:\\\\ProgramData", "MineFleet");
@@ -2422,7 +2473,7 @@ async function startAgent() {
           cpuPercent: cpuUsagePct,
           ramPercent: ramUsagePct,
           gpuPercent: null,
-          cpuTempC: 43.5,
+          cpuTempC: null,
           gpuTempC: null,
           hashrate: currentHashrate,
           miningThreads: activeThreads,
@@ -2443,6 +2494,7 @@ async function startAgent() {
           cpuCores: cpus().length,
           cpuThreads: cpus().length,
           ramBytes: totMem,
+          gpus: cfg.gpus || [],
           agentVersion: "0.2.0"
         };
       }

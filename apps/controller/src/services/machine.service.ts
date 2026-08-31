@@ -10,11 +10,26 @@ const logger = createChildLogger('machine-service');
 export async function authenticateMachine(apiToken: string): Promise<{ machineId: string; machineUid: string } | null> {
   const storage = getStorage();
   const tokenHash = hashToken(apiToken);
-  const machines = await storage.listMachines();
 
+  // O(1) lookup via reverse token hash index
+  const machineId = await storage.getMachineIdByTokenHash(tokenHash);
+  if (machineId) {
+    const cred = await storage.getMachineCredential(machineId);
+    if (cred && !cred.revoked) {
+      const machine = await storage.getMachineById(machineId);
+      if (machine) {
+        return { machineId: machine.id, machineUid: machine.machineUid };
+      }
+    }
+  }
+
+  // Fallback: O(N) scan for credentials saved before the index existed
+  const machines = await storage.listMachines();
   for (const m of machines) {
     const cred = await storage.getMachineCredential(m.id);
     if (cred && cred.tokenHash === tokenHash && !cred.revoked) {
+      // Backfill the reverse index for future O(1) lookups
+      await storage.saveMachineCredential(cred);
       return { machineId: m.id, machineUid: m.machineUid };
     }
   }

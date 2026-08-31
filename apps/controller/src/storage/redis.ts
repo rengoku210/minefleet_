@@ -112,6 +112,12 @@ export class UpstashRedisStorageAdapter implements StorageAdapter {
     const machine = await this.getMachineById(id);
     if (!machine) return false;
 
+    // Clean up credential reverse index
+    const cred = await this.getMachineCredential(id);
+    if (cred) {
+      await this.redis.del(`mf:cred_hash:${cred.tokenHash}`);
+    }
+
     await this.redis.del(`mf:machine:${id}`);
     await this.redis.del(`mf:uid_map:${machine.machineUid}`);
     await this.redis.del(`mf:cred:${id}`);
@@ -131,6 +137,12 @@ export class UpstashRedisStorageAdapter implements StorageAdapter {
 
   async saveMachineCredential(cred: StoredCredential): Promise<void> {
     await this.redis.set(`mf:cred:${cred.machineId}`, cred);
+    await this.redis.set(`mf:cred_hash:${cred.tokenHash}`, cred.machineId);
+  }
+
+  async getMachineIdByTokenHash(tokenHash: string): Promise<string | null> {
+    const machineId = await this.redis.get<string>(`mf:cred_hash:${tokenHash}`);
+    return machineId || null;
   }
 
   // Configurations

@@ -137,6 +137,7 @@ export interface StorageAdapter {
   // Credentials
   getMachineCredential(machineId: string): Promise<StoredCredential | null>;
   saveMachineCredential(cred: StoredCredential): Promise<void>;
+  getMachineIdByTokenHash(tokenHash: string): Promise<string | null>;
 
   // Configurations
   getMachineConfig(machineId: string): Promise<MachineConfig | null>;

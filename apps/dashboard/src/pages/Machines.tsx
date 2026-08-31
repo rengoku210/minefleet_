@@ -171,7 +171,7 @@ export default function Machines() {
               </div>
               <div className="flex items-center gap-4">
                 <span className="text-xs text-[var(--text-muted)]">
-                  Last seen: {m.lastHeartbeat ? new Date(m.lastHeartbeat).toLocaleTimeString() : 'Never'}
+                  Last seen: {(m.last_heartbeat || m.lastHeartbeat) ? new Date(m.last_heartbeat || m.lastHeartbeat).toLocaleTimeString() : 'Never'}
                 </span>
                 <button
                   onClick={() => deleteMachine(m.id)}

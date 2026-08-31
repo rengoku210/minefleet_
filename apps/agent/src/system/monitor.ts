@@ -80,12 +80,11 @@ export async function collectTelemetry(): Promise<TelemetrySnapshot> {
     cpuPercent,
     ramPercent,
     gpuPercent,
-    cpuTempC: cpuTempC ?? 42,
+    cpuTempC: cpuTempC ?? null,
     gpuTempC,
     hashrate: currentHashrate,
     miningThreads: currentMiningThreads,
     miningStatus: currentMiningStatus,
     powerWatts: currentMiningStatus === 'mining' ? Math.round(currentMiningThreads * 35) : null,
-    safetyState: 'normal',
   };
 }
