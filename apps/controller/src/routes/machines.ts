@@ -53,14 +53,22 @@ export async function machineRoutes(app: FastifyInstance): Promise<void> {
       telemetry: {
         cpuPercent: number;
         ramPercent: number;
+        ramTotalBytes?: number | null;
+        ramUsedBytes?: number | null;
+        ramAvailableBytes?: number | null;
         gpuPercent?: number;
-        cpuTempC: number;
+        cpuTempC?: number | null;
         gpuTempC?: number | null;
         hashrate: number;
         miningThreads: number;
         miningStatus: 'idle' | 'mining' | 'paused' | 'stopped' | 'error';
         powerWatts?: number | null;
         safetyState?: 'normal' | 'throttled' | 'paused_thermal' | 'paused_load';
+        workloadLevel?: 'light' | 'normal' | 'heavy' | 'critical';
+        minefleetCpuPercent?: number | null;
+        otherCpuPercent?: number | null;
+        topProcesses?: any[];
+        uptimeSeconds?: number;
       };
       systemInfo?: any;
       configVersion?: number;
@@ -84,7 +92,7 @@ export async function machineRoutes(app: FastifyInstance): Promise<void> {
       cpuPercent: 0,
       ramPercent: 0,
       gpuPercent: 0,
-      cpuTempC: 0,
+      cpuTempC: null,
       hashrate: 0,
       miningThreads: 0,
       miningStatus: 'idle',
@@ -107,14 +115,22 @@ export async function machineRoutes(app: FastifyInstance): Promise<void> {
       machineId,
       cpuPercent: tel.cpuPercent || 0,
       ramPercent: tel.ramPercent || 0,
+      ramTotalBytes: tel.ramTotalBytes ?? null,
+      ramUsedBytes: tel.ramUsedBytes ?? null,
+      ramAvailableBytes: tel.ramAvailableBytes ?? null,
       gpuPercent: tel.gpuPercent || 0,
-      cpuTempC: tel.cpuTempC || 0,
-      gpuTempC: tel.gpuTempC || null,
+      cpuTempC: tel.cpuTempC ?? null,
+      gpuTempC: tel.gpuTempC ?? null,
       hashrate: tel.hashrate || 0,
       miningThreads: tel.miningThreads || 0,
       miningStatus: tel.miningStatus || 'idle',
-      powerWatts: tel.powerWatts || null,
+      powerWatts: tel.powerWatts ?? null,
       safetyState: tel.safetyState || 'normal',
+      workloadLevel: tel.workloadLevel || 'light',
+      minefleetCpuPercent: tel.minefleetCpuPercent ?? null,
+      otherCpuPercent: tel.otherCpuPercent ?? null,
+      topProcesses: Array.isArray(tel.topProcesses) ? tel.topProcesses.slice(0, 10) : [],
+      uptimeSeconds: tel.uptimeSeconds ?? undefined,
       recordedAt: nowIso,
     });
 
@@ -126,7 +142,7 @@ export async function machineRoutes(app: FastifyInstance): Promise<void> {
         c: Math.round((tel.cpuPercent || 0) * 10) / 10,
         r: Math.round((tel.ramPercent || 0) * 10) / 10,
         g: Math.round((tel.gpuPercent || 0) * 10) / 10,
-        temp: Math.round((tel.cpuTempC || 0) * 10) / 10,
+        temp: tel.cpuTempC ? Math.round(tel.cpuTempC * 10) / 10 : 0,
         h: Math.round((tel.hashrate || 0) * 10) / 10,
         p: tel.powerWatts ? Math.round(tel.powerWatts) : undefined,
       },

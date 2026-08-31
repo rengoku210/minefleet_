@@ -48,8 +48,9 @@ export async function listMachines() {
   const result = [];
 
   for (const m of machines) {
-    const lastSeenMs = m.lastHeartbeat ? new Date(m.lastHeartbeat).getTime() : 0;
-    const isOnline = lastSeenMs > 0 && (now - lastSeenMs) < 60000; // 60s timeout
+    const hbStr = m.lastHeartbeat || (m as any).last_heartbeat;
+    const lastSeenMs = hbStr ? new Date(hbStr).getTime() : 0;
+    const isOnline = lastSeenMs > 0 && (now - lastSeenMs) < 90000; // 90s timeout (3 missed heartbeats)
     const currentStatus = isOnline ? 'online' : 'offline';
 
     // Update status in storage if it changed
@@ -58,6 +59,8 @@ export async function listMachines() {
       await storage.saveMachine(m);
     }
 
+    const state = await storage.getMachineState(m.id);
+
     result.push({
       id: m.id,
       name: m.name,
@@ -65,13 +68,32 @@ export async function listMachines() {
       os: m.os,
       status: m.status,
       cpu_model: m.cpuModel,
+      cpuModel: m.cpuModel,
+      cpu_cores: m.cpuCores,
+      cpu_threads: m.cpuThreads,
       gpu_count: m.gpus ? m.gpus.length : 0,
       gpus: m.gpus || [],
       ram_bytes: m.ramBytes || 0,
+      ramBytes: m.ramBytes || 0,
       agent_version: m.agentVersion,
       group_id: m.groupId || null,
       group_name: m.groupId ? groupMap.get(m.groupId) || null : null,
-      last_heartbeat: m.lastHeartbeat || null,
+      last_heartbeat: m.lastHeartbeat || (m as any).last_heartbeat || null,
+      lastHeartbeat: m.lastHeartbeat || (m as any).last_heartbeat || null,
+      telemetry: state ? {
+        cpuPercent: state.cpuPercent,
+        ramPercent: state.ramPercent,
+        gpuPercent: state.gpuPercent,
+        cpuTempC: state.cpuTempC,
+        gpuTempC: state.gpuTempC,
+        hashrate: state.hashrate,
+        miningThreads: state.miningThreads,
+        miningStatus: state.miningStatus,
+        safetyState: state.safetyState,
+        workloadLevel: state.workloadLevel,
+        minefleetCpuPercent: state.minefleetCpuPercent,
+        otherCpuPercent: state.otherCpuPercent,
+      } : null,
     });
   }
 
@@ -94,8 +116,9 @@ export async function getMachine(machineId: string) {
   const latestTelemetry = await storage.getMachineState(machineId);
 
   // Compute online status
-  const lastSeenMs = machine.lastHeartbeat ? new Date(machine.lastHeartbeat).getTime() : 0;
-  const isOnline = lastSeenMs > 0 && (Date.now() - lastSeenMs) < 60000;
+  const hbStr = machine.lastHeartbeat || (machine as any).last_heartbeat;
+  const lastSeenMs = hbStr ? new Date(hbStr).getTime() : 0;
+  const isOnline = lastSeenMs > 0 && (Date.now() - lastSeenMs) < 90000;
   machine.status = isOnline ? 'online' : 'offline';
 
   return {
@@ -108,6 +131,7 @@ export async function getMachine(machineId: string) {
       ram_bytes: machine.ramBytes,
       gpus: machine.gpus || [],
       last_heartbeat: machine.lastHeartbeat,
+      lastHeartbeat: machine.lastHeartbeat,
     },
     config,
     latestTelemetry,
@@ -140,8 +164,14 @@ export async function updateMachineSystemInfo(
   machine.cpuCores = info.cpuCores;
   machine.cpuThreads = info.cpuThreads;
   machine.ramBytes = info.ramBytes;
-  machine.gpus = info.gpus || [];
+  if (info.gpus && info.gpus.length > 0) {
+    machine.gpus = info.gpus;
+  }
   machine.agentVersion = info.agentVersion;
+  machine.status = 'online';
+  if (!machine.lastHeartbeat) {
+    machine.lastHeartbeat = new Date().toISOString();
+  }
   machine.updatedAt = new Date().toISOString();
 
   await storage.saveMachine(machine);

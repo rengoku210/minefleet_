@@ -1,8 +1,22 @@
 import type { MiningStatus } from './machine.js';
 
+export type WorkloadLevel = 'light' | 'normal' | 'heavy' | 'critical';
+export type SafetyState = 'normal' | 'throttled' | 'paused_thermal' | 'paused_load';
+
+export interface ProcessItem {
+  name: string;
+  cpuPercent: number;
+  ramBytes: number;
+  pid?: number;
+  status?: string;
+}
+
 export interface TelemetrySnapshot {
   cpuPercent: number;
   ramPercent: number;
+  ramTotalBytes?: number | null;
+  ramUsedBytes?: number | null;
+  ramAvailableBytes?: number | null;
   gpuPercent: number | null;
   cpuTempC: number | null;
   gpuTempC: number | null;
@@ -10,6 +24,12 @@ export interface TelemetrySnapshot {
   miningThreads: number;
   miningStatus: MiningStatus;
   powerWatts: number | null;
+  safetyState?: SafetyState;
+  workloadLevel?: WorkloadLevel;
+  minefleetCpuPercent?: number | null;
+  otherCpuPercent?: number | null;
+  topProcesses?: ProcessItem[];
+  uptimeSeconds?: number;
 }
 
 export interface TelemetryRecord extends TelemetrySnapshot {

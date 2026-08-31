@@ -32,7 +32,7 @@ export async function statsRoutes(app: FastifyInstance): Promise<void> {
         totalCpu += state.cpuPercent || 0;
         totalGpu += state.gpuPercent || 0;
         totalHashrate += state.hashrate || 0;
-        if ((state.cpuTempC || 0) > maxTemp) maxTemp = state.cpuTempC;
+        if ((state.cpuTempC || 0) > maxTemp) maxTemp = state.cpuTempC || 0;
       }
     }
 

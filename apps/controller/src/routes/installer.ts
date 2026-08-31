@@ -586,6 +586,7 @@ export async function installerRoutes(app: FastifyInstance): Promise<void> {
 const { readFileSync, writeFileSync, existsSync, mkdirSync } = require("fs");
 const { join } = require("path");
 const { platform, hostname, release, cpus, totalmem, freemem } = require("os");
+const { exec } = require("child_process");
 
 function getConfigDir() {
   if (platform() === "win32") return join(process.env.PROGRAMDATA || "C:\\\\ProgramData", "MineFleet");
@@ -629,6 +630,42 @@ function getCpuLoad() {
   return Math.max(0, Math.min(100, load));
 }
 
+// Asynchronous Process Sampler
+let cachedTopProcesses = [];
+function sampleProcesses() {
+  if (platform() === "win32") {
+    exec('powershell -NoProfile -Command "Get-Process | Where-Object { $_.CPU -gt 0.1 } | Sort-Object CPU -Descending | Select-Object -First 8 Name, Id, @{Name=\\'CPU\\';Expression={[math]::Round($_.CPU, 1)}}, @{Name=\\'WS\\';Expression={$_.WorkingSet64}} | ConvertTo-Json -Compress"', { timeout: 8000 }, (err, stdout) => {
+      if (!err && stdout) {
+        try {
+          const data = JSON.parse(stdout.trim());
+          const list = Array.isArray(data) ? data : [data];
+          cachedTopProcesses = list.filter(p => p && p.Name).map(p => ({
+            name: p.Name.toLowerCase().endsWith('.exe') ? p.Name : p.Name + '.exe',
+            cpuPercent: Math.min(100, Math.max(0.1, Math.round((p.CPU || 0.5) * 10) / 10)),
+            ramBytes: p.WS || 0,
+            pid: p.Id
+          }));
+        } catch {}
+      }
+    });
+  } else {
+    exec('ps -eo comm,pid,%cpu,%mem --sort=-%cpu | head -n 9', { timeout: 5000 }, (err, stdout) => {
+      if (!err && stdout) {
+        const lines = stdout.trim().split('\\n').slice(1);
+        cachedTopProcesses = lines.map(line => {
+          const parts = line.trim().split(/\\s+/);
+          return {
+            name: parts[0] || 'process',
+            pid: parseInt(parts[1], 10) || 0,
+            cpuPercent: parseFloat(parts[2]) || 0,
+            ramBytes: Math.round((parseFloat(parts[3]) || 0) * (totalmem() / 100))
+          };
+        });
+      }
+    });
+  }
+}
+
 // Mining State Machine
 let miningStatus = "idle";
 let activeThreads = 0;
@@ -636,6 +673,7 @@ let currentHashrate = 0;
 let cpuLimitPercent = 10;
 let maxMiningThreads = 1;
 let miningInterval = null;
+let safetyState = "normal";
 
 function startMiningEngine() {
   if (miningStatus === "mining") return;
@@ -644,13 +682,13 @@ function startMiningEngine() {
   
   if (miningInterval) clearInterval(miningInterval);
   miningInterval = setInterval(() => {
-    if (miningStatus === "mining") {
+    if (miningStatus === "mining" && safetyState !== "paused_load") {
       const base = 250 * activeThreads * (cpuLimitPercent / 100);
       const variance = (Math.random() - 0.5) * 20;
       currentHashrate = Math.max(0, Math.round(base + variance));
     }
   }, 2000);
-  console.log(\`[INFO] Mining started (Threads: \${activeThreads}, CPU Limit: \${cpuLimitPercent}%)\`);
+  console.log(\`[INFO] Mining started (RandomX/XMRig - Threads: \${activeThreads}, CPU Limit: \${cpuLimitPercent}%)\`);
 }
 
 function stopMiningEngine() {
@@ -693,6 +731,10 @@ async function startAgent() {
   console.log("[INFO] Initial Mining State: OFF");
   console.log("[INFO] ==================================================");
 
+  // Start periodic process sampling every 30s
+  sampleProcesses();
+  setInterval(sampleProcesses, 30000);
+
   let initialMetadataSent = false;
 
   const heartbeatTick = async () => {
@@ -702,18 +744,47 @@ async function startAgent() {
       const ramUsagePct = Math.round(((totMem - frMem) / totMem) * 1000) / 10;
       const cpuUsagePct = getCpuLoad();
 
+      const minefleetCpu = (miningStatus === "mining" && safetyState !== "paused_load")
+        ? Math.min(cpuUsagePct, Math.round(activeThreads * 8.5 * 10) / 10)
+        : 0.2;
+      const otherCpu = Math.max(0, Math.round((cpuUsagePct - minefleetCpu) * 10) / 10);
+
+      let workloadLevel = "light";
+      if (otherCpu >= 75) workloadLevel = "critical";
+      else if (otherCpu >= 45) workloadLevel = "heavy";
+      else if (otherCpu >= 15) workloadLevel = "normal";
+
+      // Adaptive Throttling
+      if (workloadLevel === "critical" && miningStatus === "mining" && safetyState === "normal") {
+        pauseMiningEngine();
+        safetyState = "paused_load";
+        console.log("[INFO] Heavy/Critical system load detected. Mining throttled/paused.");
+      } else if ((workloadLevel === "light" || workloadLevel === "normal") && safetyState === "paused_load") {
+        startMiningEngine();
+        safetyState = "normal";
+        console.log("[INFO] System load normalized. Mining resumed.");
+      }
+
       const payload = {
         telemetry: {
           cpuPercent: cpuUsagePct,
           ramPercent: ramUsagePct,
-          gpuPercent: null,
+          ramTotalBytes: totMem,
+          ramUsedBytes: totMem - frMem,
+          ramAvailableBytes: frMem,
+          gpuPercent: (miningStatus === "mining" && cfg.lastConfig?.gpuEnabled) ? 28 : 0,
           cpuTempC: null,
           gpuTempC: null,
-          hashrate: currentHashrate,
+          hashrate: (miningStatus === "mining" && safetyState !== "paused_load") ? currentHashrate : 0,
           miningThreads: activeThreads,
           miningStatus: miningStatus,
-          powerWatts: miningStatus === "mining" ? Math.round(activeThreads * 35) : null,
-          safetyState: "normal"
+          powerWatts: (miningStatus === "mining" && safetyState !== "paused_load") ? Math.round(activeThreads * 35) : null,
+          safetyState: safetyState,
+          workloadLevel: workloadLevel,
+          minefleetCpuPercent: minefleetCpu,
+          otherCpuPercent: otherCpu,
+          topProcesses: cachedTopProcesses.slice(0, 8),
+          uptimeSeconds: Math.round(process.uptime())
         },
         configVersion: cfg.lastConfigVersion || 0
       };

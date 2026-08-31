@@ -62,14 +62,28 @@ export interface MachineState {
   machineId: string;
   cpuPercent: number;
   ramPercent: number;
+  ramTotalBytes?: number | null;
+  ramUsedBytes?: number | null;
+  ramAvailableBytes?: number | null;
   gpuPercent: number;
-  cpuTempC: number;
+  cpuTempC: number | null;
   gpuTempC?: number | null;
   hashrate: number;
   miningThreads: number;
   miningStatus: MiningStatus;
   powerWatts?: number | null;
   safetyState: 'normal' | 'throttled' | 'paused_thermal' | 'paused_load';
+  workloadLevel?: 'light' | 'normal' | 'heavy' | 'critical';
+  minefleetCpuPercent?: number | null;
+  otherCpuPercent?: number | null;
+  topProcesses?: Array<{
+    name: string;
+    cpuPercent: number;
+    ramBytes: number;
+    pid?: number;
+    status?: string;
+  }>;
+  uptimeSeconds?: number;
   recordedAt: string;
 }
 

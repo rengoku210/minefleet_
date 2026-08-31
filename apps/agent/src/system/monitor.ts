@@ -49,13 +49,15 @@ export async function collectTelemetry(): Promise<TelemetrySnapshot> {
   let cpuTempC: number | null = null;
   let gpuPercent: number | null = null;
   let gpuTempC: number | null = null;
+  let topProcesses: Array<{ name: string; cpuPercent: number; ramBytes: number; pid?: number }> = [];
 
   try {
-    const [load, mem, cpuTemp, graphics] = await Promise.all([
+    const [load, mem, cpuTemp, graphics, procs] = await Promise.all([
       si.currentLoad().catch(() => null),
       si.mem().catch(() => null),
       si.cpuTemperature().catch(() => null),
       si.graphics().catch(() => null),
+      si.processes().catch(() => null),
     ]);
 
     if (load?.currentLoad !== undefined && !isNaN(load.currentLoad)) {
@@ -72,13 +74,38 @@ export async function collectTelemetry(): Promise<TelemetrySnapshot> {
       gpuPercent = gpu.utilizationGpu ?? null;
       gpuTempC = gpu.temperatureGpu ?? null;
     }
+    if (procs?.list && procs.list.length > 0) {
+      topProcesses = procs.list
+        .filter((p: any) => p.name && p.cpu > 0.1)
+        .sort((a: any, b: any) => (b.cpu || 0) - (a.cpu || 0))
+        .slice(0, 8)
+        .map((p: any) => ({
+          name: p.name,
+          cpuPercent: Math.round(p.cpu * 10) / 10,
+          ramBytes: p.memRss || Math.round((p.mem || 0) * 1024 * 1024),
+          pid: p.pid,
+        }));
+    }
   } catch (err) {
     logger.debug({ err }, 'Enriched SI telemetry skipped, using native OS metrics');
   }
 
+  const minefleetCpuPercent = currentMiningStatus === 'mining'
+    ? Math.min(cpuPercent, Math.round(currentMiningThreads * 8.5 * 10) / 10)
+    : 0.2;
+  const otherCpuPercent = Math.max(0, Math.round((cpuPercent - minefleetCpuPercent) * 10) / 10);
+
+  let workloadLevel: 'light' | 'normal' | 'heavy' | 'critical' = 'light';
+  if (otherCpuPercent >= 75) workloadLevel = 'critical';
+  else if (otherCpuPercent >= 45) workloadLevel = 'heavy';
+  else if (otherCpuPercent >= 15) workloadLevel = 'normal';
+
   return {
     cpuPercent,
     ramPercent,
+    ramTotalBytes: totalMem,
+    ramUsedBytes: totalMem - freeMem,
+    ramAvailableBytes: freeMem,
     gpuPercent,
     cpuTempC: cpuTempC ?? null,
     gpuTempC,
@@ -86,5 +113,10 @@ export async function collectTelemetry(): Promise<TelemetrySnapshot> {
     miningThreads: currentMiningThreads,
     miningStatus: currentMiningStatus,
     powerWatts: currentMiningStatus === 'mining' ? Math.round(currentMiningThreads * 35) : null,
+    workloadLevel,
+    minefleetCpuPercent,
+    otherCpuPercent,
+    topProcesses,
+    uptimeSeconds: Math.round(process.uptime()),
   };
 }
